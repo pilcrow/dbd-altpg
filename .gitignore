@@ -1,0 +1,4 @@
+lib/dbd/altpg/Makefile
+lib/dbd/altpg/mkmf.log
+lib/dbd/altpg/pq.o
+lib/dbd/altpg/pq.so
