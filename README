@@ -1,0 +1,45 @@
+= Description
+    dbd-altpg is a PostgreSQL database driver for the Ruby DBI project
+    with performance-sensitive functions written directly in C against
+    PostgreSQL's client library, libpq.
+
+    By contrast, the standard DBI driver "dbd-pg" is a pure ruby
+    implementation which adapts the excellent ruby-pg libpq bindings to
+    the DBI-DBD API.
+
+= Synopsis
+
+    require 'dbi'
+    
+    DBI.connect("dbi:AltPg:#{$pg_database}", $user, $pass) do |dbh|
+        dbh.prepare('SELECT * FROM my_report') do |sth|
+            sth.execute
+            sth.fetch { |row| my_pretty_print(row) }
+        end
+
+        ... do whatever you'd do with a pg database!  ...
+        ... except see "Bugs, Limitations and ToDo :) ...
+
+    end
+
+= Prerequisites
+
+    >= ruby-dbi-0.4.3
+
+= Installation
+    None yet -- see the next section.
+
+= Bugs, Limitations and ToDo
+    Non-parameterized statements and basic (output) type conversions work,
+    and are fast!
+
+    Several points of DBI compliance (dbh.tables, e.g.) are unimplemented
+    as of yet, and no pg-specific functionality (e.g., COPY, PG arrays,
+    ``dbh.func :anything'') are available yet.
+
+    See the TODO file for more details.
+
+= License
+    Copyright (c) 2009 Michael J. Pomraning
+
+	License TBD.

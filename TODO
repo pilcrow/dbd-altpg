@@ -1,0 +1,29 @@
+
+--[ General ] --------------
+
+ 1. Document, document document
+    1.1 inline rdoc
+    1.2 general overview and feature priorities
+
+ 2. Test cases
+
+ 3. So-called async execution
+    As in dbd-pg handle['pg_async'] = true
+
+--[ AltPg::Database ] ------
+ 1. #ping(), etc. implementation
+
+ 2. #do() implementation (direct exec)
+
+--[ AltPg::Statement ] -----
+
+ 1. column_info() precision, scale
+    xref perl-DBD-Pg dbdimp.c here
+
+ 2. binary protocol support (vs. text mode)
+
+ 3. parameterized query support
+
+ 4. prepared statement name collision remediation
+
+ 5. (??) DEALLOCATE upon finish, DEALLOCATE forgotten statements
