@@ -31,6 +31,8 @@ struct rbpq_struct { // FIXME - this could just be the pointer...
 struct rbst_struct {
 	PGconn *conn;
 	PGresult *res;
+	char **param_values;
+	int *param_lengths;
 	unsigned int nfields;
 	unsigned int ntuples;
 	unsigned int row_number;
@@ -77,6 +79,7 @@ static VALUE
 rbpq_s_alloc(VALUE klass)
 {
 	struct rbpq_struct *pq = ALLOC(struct rbpq_struct);
+	memset(pq, '\0', sizeof(struct rbpq_struct));
 	return Data_Wrap_Struct(klass, 0, rbpq_s_free, pq);
 }
 
@@ -230,7 +233,8 @@ static VALUE
 rbst_s_alloc(VALUE klass)
 {
 	struct rbst_struct *st = ALLOC(struct rbst_struct);
-	st->nfields = st->ntuples = st->row_number = 0;
+	memset((void *)st, '\0', sizeof(struct rbst_struct));
+	//st->nfields = st->ntuples = st->row_number = 0;
 	st->resultFormat = 0; /* text */
 	return Data_Wrap_Struct(klass, 0, rbst_s_free, st);
 }
@@ -263,23 +267,70 @@ rbst_initialize(VALUE self, VALUE parent, VALUE query, VALUE nParams, VALUE para
 	maybe_raise_dbi_error(st, st->res);
 	PQclear(st->res);
 	st->res = NULL;
+	rb_iv_set(self, "@params", rb_ary_new());
 
 	return self;
+}
+
+static VALUE
+rbst_bind_param(VALUE self, VALUE index, VALUE val, VALUE ignored)
+{
+	struct rbst_struct *st;
+
+	GetStmt(self, st);
+
+	rb_ary_store(rb_iv_get(self, "@params"),
+	             NUM2INT(index) - 1,
+	             rb_funcall(val, id_to_s, 0));
+
+	return Qnil;
 }
 
 static VALUE
 rbst_execute(VALUE self)
 {
 	struct rbst_struct *st;
+	VALUE iv_params;
+	int nparams;
 
 	GetStmt(self, st);
+
 	if (st->res) {
 		PQclear(st->res); // FIXME - other cancellation?
 	}
+
+	iv_params = rb_iv_get(self, "@params");
+	nparams = RARRAY_LEN(iv_params);
+	//printf("[execute] nparams is %d\n", nparams);
+	if (nparams > 0) {
+		int i;
+
+		if (NULL == st->param_values) {
+			st->param_values  = ALLOC_N(char *, nparams);
+			memset(st->param_values, '\0', sizeof(char *) * nparams);
+			st->param_lengths = ALLOC_N(int, nparams);
+			memset(st->param_lengths, '\0', sizeof(int) * nparams);
+		}
+
+		for (i = 0; i < nparams; ++i) {
+			VALUE elt = rb_ary_entry(iv_params, i);
+			//printf("@params[%d] => %s\n", i, STR2CSTR(elt));
+			if (Qnil == elt) {
+				st->param_values[i] = NULL;
+				st->param_lengths[i] = 0;
+			} else {
+				st->param_values[i] = STR2CSTR(elt);
+				st->param_lengths[i] = RSTRING_LEN(elt);
+			}
+		}
+	}
+
 	st->res = PQexecPrepared(st->conn, STR2CSTR(rb_iv_get(self, "@plan")),
-	                         0, NULL, NULL, NULL, st->resultFormat);
+	                         nparams, st->param_values,
+	                         st->param_lengths, NULL, st->resultFormat);
 	st->row_number = 0;
 	maybe_raise_dbi_error(st, st->res);
+	if (nparams) rb_ary_clear(iv_params);
 	st->nfields = PQnfields(st->res);
 	st->ntuples = PQntuples(st->res);
 
@@ -440,7 +491,7 @@ Init_pq()
 	rb_define_method(rbx_cSt, "fetch", rbst_fetch, 0);
 	rb_define_method(rbx_cSt, "rows", rbst_rows, 0);
 	rb_define_method(rbx_cSt, "column_info", rbst_column_info, 0);
-	//rb_define_method(rbx_cSt, "bind_param", rbst_bind_param, 0);
+	rb_define_method(rbx_cSt, "bind_param", rbst_bind_param, 3);
 	rb_define_method(rbx_cSt, "result_format=", rbst_result_format, 1);
 
 	id_object_id = rb_intern("object_id");
