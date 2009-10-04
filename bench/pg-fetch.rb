@@ -17,7 +17,7 @@ DBI.connect(*ARGV) do |dbh|
   Benchmark.bm(20) do |bm|
     #bm.report('select_all') { 100.times { dbh.select_all(@sql) } }
     dbh.prepare(@sql) do |sth|
-      bm.report('execute/fetch_all') { 50.times { sth.execute; p sth.fetch_all } }
+      bm.report('execute/fetch_all') { 50.times { sth.execute; sth.fetch_all } }
     end
   end
   dbh.do('DROP VIEW dataview') rescue nil

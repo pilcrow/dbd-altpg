@@ -242,6 +242,7 @@ rbst_execute(VALUE self)
 	GetStmt(self, st);
 	st->res = PQexecPrepared(st->conn, STR2CSTR(rb_iv_get(self, "@plan")),
 	                         0, NULL, NULL, NULL, st->resultFormat);
+	st->row_number = 0;
 	maybe_raise_dbi_error(st, st->res);
 	st->nfields = PQnfields(st->res);
 	st->ntuples = PQntuples(st->res);
