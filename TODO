@@ -23,6 +23,9 @@
  2. binary protocol support (vs. text mode)
 
  3. parameterized query support
+    (??) Call describePrepared to find out param nos. in advance?
+    (??) Keep @params and just use that?
+    (??) Use @params the first time, then remember nParams for efficiency?
 
  4. prepared statement name collision remediation
 
