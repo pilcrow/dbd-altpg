@@ -221,7 +221,6 @@ rbst_initialize(VALUE self, VALUE parent, VALUE query, VALUE nParams, VALUE para
 
 	st->conn = pq->conn;
 
-	rb_iv_set(self, "@query", query);
 	rb_iv_set(self, "@type_map", rb_iv_get(parent, "@type_map")); // ??? store @parent instead?
 	plan = rb_str_new2("ruby-dbi:altpg:");
 	rb_str_append(plan, rb_funcall(rb_funcall(self, id_object_id, 0), id_to_s, 0));
