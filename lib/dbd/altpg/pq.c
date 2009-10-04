@@ -240,6 +240,9 @@ rbst_execute(VALUE self)
 	struct rbst_struct *st;
 
 	GetStmt(self, st);
+	if (st->res) {
+		PQclear(st->res) // FIXME - other cancellation?
+	}
 	st->res = PQexecPrepared(st->conn, STR2CSTR(rb_iv_get(self, "@plan")),
 	                         0, NULL, NULL, NULL, st->resultFormat);
 	st->row_number = 0;
