@@ -48,6 +48,19 @@ struct rbst_struct {
 #define SetStmt(obj, st) \
 	do { ((struct rbst_struct *)DATA_PTR(obj)) = st; } while (0);
 
+static VALUE
+convert_PQcmdTuples(PGresult *res)
+{
+	VALUE ret = Qnil;
+	if (res) {
+		char *rows = PQcmdTuples(res);
+		if (rows[0] != '\0') {
+			ret = rb_Integer(rb_str_new2(rows));
+		}
+	}
+	return ret;
+}
+
 /* ==== Class methods ===================================================== */
 
 static void
@@ -130,6 +143,7 @@ rbpq_connectdb(VALUE self, VALUE conninfo) /* PQconnectdb */
 		PQfinish(pq->conn);
 		raise_dbi_database_error(e, "08000");
 	}
+	/*
 	{
 		int i, ntuples;
 		VALUE map = rb_hash_new();
@@ -149,6 +163,7 @@ rbpq_connectdb(VALUE self, VALUE conninfo) /* PQconnectdb */
 		//rb_iv_set(self, "@type_map", map);
 		PQclear(r);
 	}
+	*/
 
 	pq->finished = 0;
 
@@ -168,6 +183,22 @@ rbpq_disconnect(VALUE self)
 	pq->finished = 1;
 
 	return Qnil;
+}
+
+static VALUE
+rbpq_do(VALUE self, VALUE query)
+{
+	struct rbpq_struct *pq;
+	PGresult *res;
+	VALUE rows;
+
+	GetPqStruct(self, pq);
+	res = PQexec(pq->conn, STR2CSTR(query));
+	maybe_raise_dbi_error(NULL, res);
+	rows = convert_PQcmdTuples(res);
+	PQclear(res);
+
+	return rows;
 }
 
 static VALUE
@@ -311,14 +342,9 @@ static VALUE
 rbst_rows(VALUE self)
 {
 	struct rbst_struct *st;
-	char *rows;
 
 	GetStmt(self, st);
-	rows = PQcmdTuples(st->res);
-
-	return '\0' == rows[0]
-	       ? Qnil
-	       : rb_str_new2(rows);
+	return convert_PQcmdTuples(st->res);
 }
 
 /*
@@ -405,6 +431,7 @@ Init_pq()
 	rb_define_method(rbx_cPq, "connectdb", rbpq_connectdb, 1); /* PQconnectdb */
 	rb_define_method(rbx_cPq, "disconnect", rbpq_disconnect, 0); /* PQfinish */
 	rb_define_method(rbx_cPq, "database_name", rbpq_dbname, 0); /* PQdb */
+	rb_define_method(rbx_cPq, "do", rbpq_do, 1); /* PQdb */
 
 	rb_define_alloc_func(rbx_cSt, rbst_s_alloc);
 	rb_define_method(rbx_cSt, "initialize", rbst_initialize, 4);
