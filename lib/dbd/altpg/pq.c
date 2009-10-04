@@ -25,6 +25,7 @@ static VALUE sym_dbi_type;
 struct rbpq_struct { // FIXME - this could just be the pointer...
 	PGconn *conn;
 	int finished;
+	unsigned long serial;  // pstmt name suffix; may wrap
 };
 
 struct rbst_struct {
@@ -224,6 +225,8 @@ rbst_initialize(VALUE self, VALUE parent, VALUE query, VALUE nParams, VALUE para
 	rb_iv_set(self, "@type_map", rb_iv_get(parent, "@type_map")); // ??? store @parent instead?
 	plan = rb_str_new2("ruby-dbi:altpg:");
 	rb_str_append(plan, rb_funcall(rb_funcall(self, id_object_id, 0), id_to_s, 0));
+	rb_str_buf_cat(plan, "-", 1);
+	rb_str_append(plan, rb_funcall(ULONG2NUM(pq->serial++), id_to_s, 0));
 	rb_iv_set(self, "@plan", plan);
 
 	st->res = PQprepare(st->conn, RSTRING_PTR(plan), RSTRING_PTR(query), 0, NULL);
@@ -241,7 +244,7 @@ rbst_execute(VALUE self)
 
 	GetStmt(self, st);
 	if (st->res) {
-		PQclear(st->res) // FIXME - other cancellation?
+		PQclear(st->res); // FIXME - other cancellation?
 	}
 	st->res = PQexecPrepared(st->conn, STR2CSTR(rb_iv_get(self, "@plan")),
 	                         0, NULL, NULL, NULL, st->resultFormat);
@@ -265,6 +268,16 @@ rbst_finish(VALUE self)
 		PQclear(st->res);
 		st->res = NULL;
 	}
+
+	if (st->conn) {
+		VALUE plan = rb_iv_get(self, "@plan");
+		//printf("@plan is %s\n", STR2CSTR(plan));
+		VALUE deallocate_fmt = rb_str_new2("DEALLOCATE \"%s\"");
+		PGresult *res = PQexec(st->conn, STR2CSTR(rb_str_format(1, &plan, deallocate_fmt)));
+		maybe_raise_dbi_error(st, res);
+		PQclear(res);
+	}
+
 	return Qnil;
 }
 
@@ -337,7 +350,7 @@ rbst_column_info(VALUE self)
 	for (i = 0; i < st->nfields; ++i) {
 		VALUE col = rb_hash_new();
 		VALUE type_map_entry;
-		int fmod;
+		//int fmod;
 		Oid ftype;
 
 		//fmod  = PQfmod(st->res, i);  // XXX - T.E. compute ftypes in advance?
