@@ -30,8 +30,7 @@
     None yet -- see the next section.
 
 = Bugs, Limitations and ToDo
-    Non-parameterized statements and basic (output) type conversions work,
-    and are fast!
+    Non-parameterized statements and basic (output) type conversions work.
 
     Several points of DBI compliance (dbh.tables, e.g.) are unimplemented
     as of yet, and no pg-specific functionality (e.g., COPY, PG arrays,
