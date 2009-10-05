@@ -15,7 +15,9 @@ static VALUE rbx_mAltPg;
 static VALUE rbx_cPq;
 static VALUE rbx_cSt;
 
+#ifdef DBD_PG_PSTMT_OBJECT_ID
 static ID id_object_id;
+#endif
 static ID id_to_s;
 static ID id_to_i;
 static ID id_new;
@@ -254,8 +256,10 @@ rbst_initialize(VALUE self, VALUE parent, VALUE query, VALUE nParams, VALUE para
 
 	rb_iv_set(self, "@type_map", rb_iv_get(parent, "@type_map")); // ??? store @parent instead?
 	plan = rb_str_new2("ruby-dbi:altpg:");
+#ifdef DBD_PG_PSTMT_OBJECT_ID
 	rb_str_append(plan, rb_funcall(rb_funcall(self, id_object_id, 0), id_to_s, 0));
 	rb_str_buf_cat(plan, "-", 1);
+#endif
 	rb_str_append(plan, rb_funcall(ULONG2NUM(pq->serial++), id_to_s, 0));
 	rb_iv_set(self, "@plan", plan);
 
@@ -443,7 +447,9 @@ Init_pq()
 	//rb_define_method(rbx_cSt, "bind_param", rbst_bind_param, 0);
 	rb_define_method(rbx_cSt, "result_format=", rbst_result_format, 1);
 
+#ifdef DBD_PG_PSTMT_OBJECT_ID
 	id_object_id = rb_intern("object_id");
+#endif
 	id_to_s      = rb_intern("to_s");
 	id_to_i      = rb_intern("to_i");
 	id_new       = rb_intern("new");
