@@ -1,5 +1,4 @@
 #include <libpq-fe.h>
-
 #include <ruby.h>
 //#include <rubyio.h>
 //#include <st.h>
@@ -21,6 +20,7 @@ static ID id_object_id;
 static ID id_to_s;
 static ID id_to_i;
 static ID id_new;
+static ID id_inspect;
 static VALUE sym_type_name;
 static VALUE sym_dbi_type;
 
@@ -33,6 +33,9 @@ struct rbpq_struct { // FIXME - this could just be the pointer...
 struct rbst_struct {
 	PGconn *conn;
 	PGresult *res;
+	int nparams;
+	char **param_values;
+	int *param_lengths;
 	unsigned int nfields;
 	unsigned int ntuples;
 	unsigned int row_number;
@@ -63,29 +66,17 @@ convert_PQcmdTuples(PGresult *res)
 	return ret;
 }
 
-/* ==== Class methods ===================================================== */
-
-static void
-rbpq_s_free(struct rbpq_struct *pq)
-{
-	if (NULL != pq && !pq->finished && NULL != pq->conn) {
-		PQfinish(pq->conn);
-		pq->conn = NULL;
-		pq->finished = 1;
-	}
-}
-
 static VALUE
-rbpq_s_alloc(VALUE klass)
+new_dbi_database_error(const char *msg,
+                       VALUE err,
+                       const char *sqlstate)
 {
-	struct rbpq_struct *pq = ALLOC(struct rbpq_struct);
-	return Data_Wrap_Struct(klass, 0, rbpq_s_free, pq);
-}
-
-static void
-raise_dbi_error(VALUE klass, const char *msg, const char *sqlstate)
-{
-	rb_raise(klass, msg);
+	return rb_funcall(rb_path2class("DBI::DatabaseError"),
+	                  id_new,
+	                  3,
+	                  msg ? rb_str_new2(msg) : Qnil,
+	                  err,
+	                  sqlstate ? rb_str_new2(sqlstate) : Qnil);
 }
 
 static void
@@ -103,28 +94,39 @@ maybe_raise_dbi_error(struct rbst_struct *st, PGresult *res)
 	case PGRES_FATAL_ERROR:
 	case PGRES_NONFATAL_ERROR:
 		{
-			VALUE e = rb_funcall(rb_path2class("DBI::DatabaseError"),
-			                     id_new,
-			                     3,
-			                     rb_str_new2(PQresultErrorMessage(res)),
-													 Qnil,
-			                     rb_str_new2(PQresultErrorField(res, PG_DIAG_SQLSTATE)));
+			VALUE e = new_dbi_database_error(
+			            PQresultErrorMessage(res),
+									Qnil,
+			            PQresultErrorField(res, PG_DIAG_SQLSTATE));
 			PQclear(res);
 			if (st) st->res = NULL;
 			rb_exc_raise(e);
 			break; /* not reached */
 		}
   default:
-	  raise_dbi_error(rb_path2class("DBI::InternalError"),
-		                "Unknown/unexpected PQresultStatus '%s'", PQresStatus(status));
+	  rb_raise(rb_path2class("DBI::InternalError"),
+		         "Unknown/unexpected PQresultStatus");
 	}
 }
 
+/* ==== Class methods ===================================================== */
+
 static void
-raise_dbi_database_error(const char *msg, const char *sqlstate)
+rbpq_s_free(struct rbpq_struct *pq)
 {
-	// FIXME - ignoring other args for now
-	raise_dbi_error(rb_path2class("DBI::OperationalError"), msg, sqlstate);
+	if (NULL != pq && !pq->finished && NULL != pq->conn) {
+		PQfinish(pq->conn);
+		pq->conn = NULL;
+		pq->finished = 1;
+	}
+}
+
+static VALUE
+rbpq_s_alloc(VALUE klass)
+{
+	struct rbpq_struct *pq = ALLOC(struct rbpq_struct);
+	memset(pq, '\0', sizeof(struct rbpq_struct));
+	return Data_Wrap_Struct(klass, 0, rbpq_s_free, pq);
 }
 
 /* ==== Instance methods ================================================== */
@@ -141,9 +143,11 @@ rbpq_connectdb(VALUE self, VALUE conninfo) /* PQconnectdb */
 	if (NULL == pq->conn) {
 		rb_raise(rb_eNoMemError, "Unable to allocate libPQ structures");
 	} else if (PQstatus(pq->conn) != CONNECTION_OK) {
-		char *e = strdup(PQerrorMessage(pq->conn));
+		VALUE e = new_dbi_database_error(PQerrorMessage(pq->conn),
+		                                 Qnil,
+		                                 "08000");
 		PQfinish(pq->conn);
-		raise_dbi_database_error(e, "08000");
+		rb_exc_raise(e);
 	}
 	/*
 	{
@@ -222,30 +226,33 @@ rbpq_dbname(VALUE self)
 static void
 rbst_s_free(struct rbst_struct *st)
 {
-	if (NULL != st && NULL != st->conn) {
-		// FIXME - cancel in progress?
-		if (st->res) PQclear(st->res);
-	}
+	if (NULL == st) return;
+
+	// FIXME - cancel in progress?
+	if (st->res) PQclear(st->res);
+	if (st->param_lengths) free(st->param_lengths);
+	if (st->param_values) free(st->param_values);
 }
 
 static VALUE
 rbst_s_alloc(VALUE klass)
 {
 	struct rbst_struct *st = ALLOC(struct rbst_struct);
-	st->nfields = st->ntuples = st->row_number = 0;
-	st->resultFormat = 0; /* text */
+	memset((void *)st, '\0', sizeof(struct rbst_struct));
 	return Data_Wrap_Struct(klass, 0, rbst_s_free, st);
 }
 
+/* FIXME:  paramTypes ? */
 static VALUE
-rbst_initialize(VALUE self, VALUE parent, VALUE query, VALUE nParams, VALUE paramTypes) /* PQprepare */
+rbst_initialize(VALUE self, VALUE parent, VALUE query, VALUE nParams) /* PQprepare */
 {
 	struct rbpq_struct *pq;
 	struct rbst_struct *st;
 	VALUE plan;
 
 	if (!rb_obj_is_instance_of(parent, rbx_cPq)) {
-		rb_raise(rb_eTypeError, "Expected argument of type DBI::DBD::AltPg::Database");
+		rb_raise(rb_eTypeError,
+		         "Expected argument of type DBI::DBD::AltPg::Database");
 	}
 
 	Check_SafeStr(query);
@@ -253,6 +260,14 @@ rbst_initialize(VALUE self, VALUE parent, VALUE query, VALUE nParams, VALUE para
 	GetPqStruct(parent, pq);
 
 	st->conn = pq->conn;
+	st->nparams = FIX2INT(nParams);
+	if (st->nparams < 0) {
+		rb_raise(rb_eTypeError, "Number of parameters must be >= 0");
+	}
+	st->param_values = ALLOC_N(char *, st->nparams);
+	MEMZERO(st->param_values, char *, st->nparams);
+	st->param_lengths = ALLOC_N(int, st->nparams);
+	MEMZERO(st->param_lengths, int, st->nparams);
 
 	rb_iv_set(self, "@type_map", rb_iv_get(parent, "@type_map")); // ??? store @parent instead?
 	plan = rb_str_new2("ruby-dbi:altpg:");
@@ -267,23 +282,73 @@ rbst_initialize(VALUE self, VALUE parent, VALUE query, VALUE nParams, VALUE para
 	maybe_raise_dbi_error(st, st->res);
 	PQclear(st->res);
 	st->res = NULL;
+	rb_iv_set(self, "@params", rb_ary_new());
 
 	return self;
+}
+
+static VALUE
+rbst_bind_param(VALUE self, VALUE index, VALUE val, VALUE ignored)
+{
+	struct rbst_struct *st;
+
+	GetStmt(self, st);
+
+	/* ??? No bounds checking on index yet.  If you want to balloon
+	 *     @params, go ahead.
+	 */
+	rb_ary_store(rb_iv_get(self, "@params"),
+	             FIX2INT(index) - 1,
+	             rb_funcall(val, id_to_s, 0));
+	//printf("bind_param -> @params[%s] = '%s'\n",
+	//       STR2CSTR(rb_funcall(index, id_inspect, 0)),
+	//       STR2CSTR(rb_funcall(val, id_inspect, 0)));
+	//printf("bind_param -> @params[%d] = '%s'\n",
+	//       FIX2INT(index) - 1,
+	//       STR2CSTR(rb_funcall(val, id_to_s, 0)));
+
+	return Qnil;
 }
 
 static VALUE
 rbst_execute(VALUE self)
 {
 	struct rbst_struct *st;
+	VALUE iv_params;
+	int i;
 
 	GetStmt(self, st);
+
 	if (st->res) {
 		PQclear(st->res); // FIXME - other cancellation?
+		st->res = NULL;
 	}
-	st->res = PQexecPrepared(st->conn, STR2CSTR(rb_iv_get(self, "@plan")),
-	                         0, NULL, NULL, NULL, st->resultFormat);
+
+	iv_params = rb_iv_get(self, "@params");
+	//printf("[execute] nparams is %d\n", st->nparams);
+
+	for (i = 0; i < st->nparams; ++i) {
+		VALUE elt = rb_ary_entry(iv_params, i);
+		//printf("@params[%d] => %s\n", i, STR2CSTR(elt));
+		if (Qnil == elt) {
+			st->param_values[i] = NULL;
+			st->param_lengths[i] = 0;
+		} else {
+			st->param_values[i] = STR2CSTR(elt);
+			st->param_lengths[i] = RSTRING_LEN(elt);
+		}
+	}
+
+	st->res = PQexecPrepared(st->conn,
+	                         STR2CSTR(rb_iv_get(self, "@plan")),
+	                         st->nparams,
+	                         st->param_values,
+	                         st->param_lengths,
+	                         NULL,
+	                         0);   /* text format */
 	st->row_number = 0;
 	maybe_raise_dbi_error(st, st->res);
+	if (st->nparams) rb_ary_clear(iv_params);
 	st->nfields = PQnfields(st->res);
 	st->ntuples = PQntuples(st->res);
 
@@ -411,7 +476,16 @@ rbst_column_info(VALUE self)
 }
 
 static VALUE
-rbst_result_format(VALUE self, VALUE fmtcode)
+rbst_result_format(VALUE self)
+{
+	struct rbst_struct *st;
+	GetStmt(self, st);
+	return INT2FIX(st->resultFormat);
+}
+
+
+static VALUE
+rbst_result_format_set(VALUE self, VALUE fmtcode)
 {
 	struct rbst_struct *st;
 
@@ -438,14 +512,15 @@ Init_pq()
 	rb_define_method(rbx_cPq, "do", rbpq_do, 1); /* PQdb */
 
 	rb_define_alloc_func(rbx_cSt, rbst_s_alloc);
-	rb_define_method(rbx_cSt, "initialize", rbst_initialize, 4);
+	rb_define_method(rbx_cSt, "initialize", rbst_initialize, 3);
 	rb_define_method(rbx_cSt, "finish", rbst_finish, 0);
 	rb_define_method(rbx_cSt, "execute", rbst_execute, 0);
 	rb_define_method(rbx_cSt, "fetch", rbst_fetch, 0);
 	rb_define_method(rbx_cSt, "rows", rbst_rows, 0);
 	rb_define_method(rbx_cSt, "column_info", rbst_column_info, 0);
-	//rb_define_method(rbx_cSt, "bind_param", rbst_bind_param, 0);
-	rb_define_method(rbx_cSt, "result_format=", rbst_result_format, 1);
+	rb_define_method(rbx_cSt, "bind_param", rbst_bind_param, 3);
+	rb_define_method(rbx_cSt, "result_format",  rbst_result_format, 0);
+	rb_define_method(rbx_cSt, "result_format=", rbst_result_format_set, 1);
 
 #ifdef DBD_PG_PSTMT_OBJECT_ID
 	id_object_id = rb_intern("object_id");
@@ -453,6 +528,7 @@ Init_pq()
 	id_to_s      = rb_intern("to_s");
 	id_to_i      = rb_intern("to_i");
 	id_new       = rb_intern("new");
+	id_inspect   = rb_intern("inspect");
 	sym_type_name = ID2SYM(rb_intern("type_name"));
 	sym_dbi_type  = ID2SYM(rb_intern("dbi_type"));
 }
