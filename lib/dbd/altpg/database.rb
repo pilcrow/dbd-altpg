@@ -18,7 +18,7 @@ class DBI::DBD::AltPg::Database < DBI::BaseDatabase
     # FIXME: handle array (_typname) types
     #
     #map = {}
-    #st = DBI::DBD::AltPg::Statement.new(self, <<'eosql', 0, nil)
+    #st = DBI::DBD::AltPg::Statement.new(self, <<'eosql', 0)
 #SELECT oid, typname FROM pg_type
 #WHERE typtype IN ('b', 'e') and typname NOT LIKE E'\\_%'
 #eosql
@@ -44,7 +44,12 @@ class DBI::DBD::AltPg::Database < DBI::BaseDatabase
   def columns(table); end
 
   def prepare(query)
-    DBI::DBD::AltPg::Statement.new(self, query, 0, nil)
+    ps = DBI::SQL::PreparedStatement.new(nil, query)
+    nparams = ps.unbound.size
+    if nparams > 0
+      query = ps.bind( (1..nparams).map {|i| "$#{i}"} )
+    end
+    DBI::DBD::AltPg::Statement.new(self, query, nparams)
   end
 
   private
@@ -72,7 +77,7 @@ class DBI::DBD::AltPg::Database < DBI::BaseDatabase
     #   ...
     # }
     map = Hash.new(DBI::Type::Varchar)
-    st = DBI::DBD::AltPg::Statement.new(self, <<'eosql', 0, nil)
+    st = DBI::DBD::AltPg::Statement.new(self, <<'eosql', 0)
 SELECT oid, typname FROM pg_type
 WHERE typtype IN ('b', 'e') and typname NOT LIKE E'\\_%'
 eosql
