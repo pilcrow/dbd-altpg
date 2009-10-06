@@ -25,6 +25,18 @@ class TestAltPgBasic < Test::Unit::TestCase
     end
   end
 
+  def test_parameterized_query
+    assert_nothing_raised do
+      @dbh.prepare('SELECT COUNT(*) FROM v WHERE three IN (?, ?)') do |sth|
+        sth.execute(10, 20)
+        assert_equal( [ [0] ], sth.fetch_all )
+        
+        sth.execute(2**18, 3)
+        assert_equal( [ [1] ], sth.fetch_all )
+      end
+    end
+  end
+
   def test_reexecute
     @dbh.prepare("SELECT * FROM v") do |sth|
       sth.execute
