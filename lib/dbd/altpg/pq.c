@@ -51,7 +51,11 @@ struct rbst_struct {
 	do { out = (struct rbst_struct *)DATA_PTR(obj); } while (0)
 
 #define SetStmt(obj, st) \
-	do { ((struct rbst_struct *)DATA_PTR(obj)) = st; } while (0);
+	do { ((struct rbst_struct *)DATA_PTR(obj)) = st; } while (0)
+
+#define StmtClearResult(st) \
+	do { if ((st)->res) { PQclear((st)->res); (st)->res = NULL; } } while (0)
+
 
 static VALUE
 convert_PQcmdTuples(PGresult *res)
@@ -64,6 +68,24 @@ convert_PQcmdTuples(PGresult *res)
 		}
 	}
 	return ret;
+}
+
+static void
+dbd_st_cancel(struct rbst_struct *st)
+{
+	if (! st->res) return;
+
+	PQclear(st->res);          /* Undo any execute() */
+	st->res = 0;
+	st->ntuples = 0;
+
+	st->row_number = 0;        /* Erase any #fetch     */
+
+	if (st->nparams) {         /* Undo any #bind_param */
+		MEMZERO(st->param_values, char *, st->nparams);
+		MEMZERO(st->param_lengths, int, st->nparams);
+	}
+
 }
 
 static VALUE
@@ -98,8 +120,7 @@ maybe_raise_dbi_error(struct rbst_struct *st, PGresult *res)
 			            PQresultErrorMessage(res),
 									Qnil,
 			            PQresultErrorField(res, PG_DIAG_SQLSTATE));
-			PQclear(res);
-			if (st) st->res = NULL;
+			dbd_st_cancel(st);
 			rb_exc_raise(e);
 			break; /* not reached */
 		}
@@ -248,6 +269,7 @@ rbst_initialize(VALUE self, VALUE parent, VALUE query, VALUE nParams) /* PQprepa
 {
 	struct rbpq_struct *pq;
 	struct rbst_struct *st;
+	PGresult *prepare_result;
 	VALUE plan;
 
 	if (!rb_obj_is_instance_of(parent, rbx_cPq)) {
@@ -278,10 +300,8 @@ rbst_initialize(VALUE self, VALUE parent, VALUE query, VALUE nParams) /* PQprepa
 	rb_str_append(plan, rb_funcall(ULONG2NUM(pq->serial++), id_to_s, 0));
 	rb_iv_set(self, "@plan", plan);
 
-	st->res = PQprepare(st->conn, RSTRING_PTR(plan), RSTRING_PTR(query), 0, NULL);
-	maybe_raise_dbi_error(st, st->res);
-	PQclear(st->res);
-	st->res = NULL;
+	prepare_result = PQprepare(st->conn, RSTRING_PTR(plan), RSTRING_PTR(query), 0, NULL);
+	maybe_raise_dbi_error(st, prepare_result);
 	rb_iv_set(self, "@params", rb_ary_new());
 
 	return self;
@@ -311,6 +331,18 @@ rbst_bind_param(VALUE self, VALUE index, VALUE val, VALUE ignored)
 }
 
 static VALUE
+rbst_cancel(VALUE self)
+{
+	struct rbst_struct *st;
+
+	GetStmt(self, st);
+	dbd_st_cancel(st);
+	rb_ary_clear(rb_iv_get(self, "@params"));
+
+	return Qnil;
+}
+
+static VALUE
 rbst_execute(VALUE self)
 {
 	struct rbst_struct *st;
@@ -319,13 +351,9 @@ rbst_execute(VALUE self)
 
 	GetStmt(self, st);
 
-	if (st->res) {
-		PQclear(st->res); // FIXME - other cancellation?
-		st->res = NULL;
-	}
+	dbd_st_cancel(st);
 
 	iv_params = rb_iv_get(self, "@params");
-	//printf("[execute] nparams is %d\n", st->nparams);
 
 	for (i = 0; i < st->nparams; ++i) {
 		VALUE elt = rb_ary_entry(iv_params, i);
@@ -346,7 +374,6 @@ rbst_execute(VALUE self)
 	                         st->param_lengths,
 	                         NULL,
 	                         0);   /* text format */
-	st->row_number = 0;
 	maybe_raise_dbi_error(st, st->res);
 	if (st->nparams) rb_ary_clear(iv_params);
 	st->nfields = PQnfields(st->res);
@@ -362,19 +389,15 @@ rbst_finish(VALUE self)
 
 	GetStmt(self, st);
 
-	if (st->res) {
-		/* FIXME - cancellation? */
-		PQclear(st->res);
-		st->res = NULL;
-	}
+	dbd_st_cancel(st);
 
 	if (st->conn) {
 		VALUE plan = rb_iv_get(self, "@plan");
 		//printf("@plan is %s\n", STR2CSTR(plan));
 		VALUE deallocate_fmt = rb_str_new2("DEALLOCATE \"%s\"");
-		PGresult *res = PQexec(st->conn, STR2CSTR(rb_str_format(1, &plan, deallocate_fmt)));
-		maybe_raise_dbi_error(st, res);
-		PQclear(res);
+		PGresult *deallocate_result = PQexec(st->conn, STR2CSTR(rb_str_format(1, &plan, deallocate_fmt)));
+		maybe_raise_dbi_error(st, deallocate_result);
+		PQclear(deallocate_result);
 	}
 
 	return Qnil;
@@ -390,8 +413,9 @@ rbst_fetch(VALUE self)
 
 	GetStmt(self, st);
 
-	if (st->row_number >= st->ntuples)
+	if (!st->res || st->row_number >= st->ntuples) {
 		return Qnil;
+	}
 
 	//printf("fetch index %d (of %d)\n", st->row_number, st->ntuples);
 	ret = rb_ary_new2(st->nfields);
@@ -513,12 +537,13 @@ Init_pq()
 
 	rb_define_alloc_func(rbx_cSt, rbst_s_alloc);
 	rb_define_method(rbx_cSt, "initialize", rbst_initialize, 3);
+	rb_define_method(rbx_cSt, "bind_param", rbst_bind_param, 3);
+	rb_define_method(rbx_cSt, "cancel", rbst_cancel, 0);
 	rb_define_method(rbx_cSt, "finish", rbst_finish, 0);
 	rb_define_method(rbx_cSt, "execute", rbst_execute, 0);
 	rb_define_method(rbx_cSt, "fetch", rbst_fetch, 0);
 	rb_define_method(rbx_cSt, "rows", rbst_rows, 0);
 	rb_define_method(rbx_cSt, "column_info", rbst_column_info, 0);
-	rb_define_method(rbx_cSt, "bind_param", rbst_bind_param, 3);
 	rb_define_method(rbx_cSt, "result_format",  rbst_result_format, 0);
 	rb_define_method(rbx_cSt, "result_format=", rbst_result_format_set, 1);
 
