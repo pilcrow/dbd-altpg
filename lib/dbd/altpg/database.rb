@@ -39,7 +39,13 @@ class DBI::DBD::AltPg::Database < DBI::BaseDatabase
     @handle.db
   end
 
-  def ping; end
+  def ping
+    self.do('')
+    true # PGRES_COMMAND_EMPTY is not an error for us
+  rescue DBI::DatabaseError
+    false
+  end
+
   def tables; end
   def columns(table); end
 
@@ -54,7 +60,22 @@ class DBI::DBD::AltPg::Database < DBI::BaseDatabase
 
   private
 
+  def query(sql)
+    st = DBI::DBD::AltPg::Statement.new(self, sql, 0)
+    st.execute
+    if block_given?
+      while r = st.fetch
+        yield(r)
+      end
+    else
+      st.fetch_all
+    end
+  ensure
+    st.finish rescue nil
+  end
+
   def pg_type_to_dbi(typname)
+    # Adapted from ruby-dbd-pg-0.3.8
     case typname
     when 'bool'                      then DBI::Type::Boolean
     when 'int8', 'int4', 'int2'      then DBI::Type::Integer
@@ -77,17 +98,14 @@ class DBI::DBD::AltPg::Database < DBI::BaseDatabase
     #   ...
     # }
     map = Hash.new(DBI::Type::Varchar)
-    st = DBI::DBD::AltPg::Statement.new(self, <<'eosql', 0)
+    sql = <<'eosql'
 SELECT oid, typname FROM pg_type
 WHERE typtype IN ('b', 'e') and typname NOT LIKE E'\\_%'
 eosql
-    st.execute
-    while r = st.fetch
-      oid, typname = r # initial query results are "text" encoded
+    query(sql) do |oid, typname|
       map[oid.to_i] = { :type_name => typname,
                         :dbi_type  => pg_type_to_dbi(typname) }
     end
-    st.finish
     map
   end
 end #-- class DBI::DBD::AltPg::Database
