@@ -1,5 +1,7 @@
 #!/usr/bin/env ruby
 
+$:.unshift ( File.basename(Dir.pwd) == "test" ? '../lib' : './lib' )
+
 require 'dbi'
 require 'test/unit'
 
