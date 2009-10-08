@@ -89,6 +89,7 @@ async_PQgetResult(PGconn *conn)
 	FD_SET(fd, &rfds);
 	r = rb_thread_select(fd + 1, &rfds, NULL, NULL, NULL);
 
+	/* ruby-pg-0.8.0 pgconn_block() */
 	PQconsumeInput(conn);
 	while (PQisBusy(conn)) {
 		FD_ZERO(&rfds);
@@ -103,11 +104,13 @@ async_PQgetResult(PGconn *conn)
 		         "async_PQgetResult select() indicated impossible timeout!");
 	}
 
+	/* ruby-pg-0.8.0 pgconn_get_last_result(), except we PQclear as needed */
 	while (tmp = PQgetResult(conn)) {
 		if (res) PQclear(res);
 		res = tmp;
 	}
 
+	/* ruby-pg-0.8.0 pgresult_check() */
 	switch (PQresultStatus(res)) {
 	case PGRES_TUPLES_OK:
 	case PGRES_COPY_OUT:
