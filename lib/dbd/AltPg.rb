@@ -16,6 +16,13 @@ module DBD
 end # -- module DBD
 end # -- module DBI
 
+DBI::TypeUtil.register_conversion(DBI::DBD::AltPg.driver_name) do |obj|
+  # dbi-0.4.3 String default conversion broken for native binding, since
+  # the former adds quotes, which should be done by native binding
+  cascade = ! obj.is_a?(::String)
+  [obj, cascade]
+end
+
 require 'dbd/altpg/driver'
 require 'dbd/altpg/database'
 require 'dbd/altpg/pq'
