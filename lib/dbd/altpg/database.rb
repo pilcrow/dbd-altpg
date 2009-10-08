@@ -46,8 +46,99 @@ class DBI::DBD::AltPg::Database < DBI::BaseDatabase
     false
   end
 
-  def tables; end
-  def columns(table); end
+  def tables
+    # SQL taken from dbd-pg-0.3.9
+    make_dbh.select_all(<<'eosql').collect { |row| row[0] }
+SELECT
+  c.relname
+FROM
+  pg_catalog.pg_class c
+WHERE
+  c.relkind IN ('r','v')
+    AND
+  pg_catalog.pg_table_is_visible(c.oid)
+eosql
+    end
+
+  def columns(table)
+    # love this SQL
+    make_dbh.prepare(<<'eosql') do |sth|
+SELECT
+  a.attname                    AS name,
+  a.atttypid                   AS pg_type,
+  t.typname                    AS type_name,
+  NOT a.attnotnull             AS nullable,
+  a.attlen                     AS len,
+  d.adsrc                      AS default,
+  COALESCE(ii.indexed, false)  AS indexed,
+  COALESCE(iu.unique, false)   AS unique,
+  COALESCE(ip.primary, false)  AS primary
+FROM
+  pg_catalog.pg_class c
+  INNER JOIN
+  pg_catalog.pg_attribute a ON c.oid = a.attrelid
+  INNER JOIN
+  pg_catalog.pg_type t ON t.oid = a.atttypid
+  LEFT JOIN
+  pg_catalog.pg_attrdef d ON d.adrelid = c.oid AND d.adnum = a.attnum
+  LEFT JOIN
+  (SELECT                          -- ii: is column indexed at all?
+     ipa.attname AS attname,
+     i0.indrelid AS tbl_oid,
+     true        AS indexed
+   FROM
+     pg_catalog.pg_attribute ipa
+   INNER JOIN
+     pg_catalog.pg_index i0 ON i0.indexrelid = ipa.attrelid
+   GROUP BY 1, 2) ii
+     ON ii.attname = a.attname AND ii.tbl_oid = c.oid
+  LEFT JOIN
+  (SELECT                          -- iu: part of a UNIQUE index?
+     iua.attname AS attname,
+     i1.indrelid AS tbl_oid,
+     true        AS unique
+   FROM
+     pg_catalog.pg_attribute iua
+   INNER JOIN
+     pg_catalog.pg_index i1 ON i1.indexrelid = iua.attrelid
+   WHERE
+     i1.indisunique
+   GROUP BY 1, 2, 3) iu
+     ON iu.attname = a.attname AND iu.tbl_oid = c.oid
+  LEFT JOIN
+  (SELECT                          -- ip: part of a PRIMARY key?
+     ipa.attname AS attname,
+     i2.indrelid AS tbl_oid,
+     true        AS primary
+   FROM
+     pg_catalog.pg_attribute ipa
+   INNER JOIN
+     pg_catalog.pg_index i2 ON i2.indexrelid = ipa.attrelid
+   WHERE
+     i2.indisprimary
+   GROUP BY 1, 2, 3) ip
+     ON ip.attname = a.attname AND ip.tbl_oid = c.oid
+WHERE
+  a.attnum > 0                          -- regular column
+    AND
+  c.relkind IN ('r','v')                -- of a TABLE or VIEW object
+    AND
+  c.relname = ?                         -- named ?, which object is
+    AND
+  pg_catalog.pg_table_is_visible(c.oid) -- visible without qualification
+ORDER BY
+  a.attnum ASC
+eosql
+      sth.execute(table)
+
+      ret = []
+      sth.collect do |row|
+        h = Hash[ *sth.column_names.zip(row).flatten ]
+        h['dbi_type'] = @type_map[ h['type_name'] ]
+        h
+      end
+    end # -- prepare
+  end
 
   def prepare(query)
     ps = DBI::SQL::PreparedStatement.new(nil, query)
@@ -60,18 +151,10 @@ class DBI::DBD::AltPg::Database < DBI::BaseDatabase
 
   private
 
-  def query(sql)
-    st = DBI::DBD::AltPg::Statement.new(self, sql, 0)
-    st.execute
-    if block_given?
-      while r = st.fetch
-        yield(r)
-      end
-    else
-      st.fetch_all
-    end
-  ensure
-    st.finish rescue nil
+  def make_dbh
+    dbh = ::DBI::DatabaseHandle.new(self)
+    dbh.driver_name = ::DBI::DBD::AltPg.driver_name
+    dbh
   end
 
   def pg_type_to_dbi(typname)
@@ -97,15 +180,31 @@ class DBI::DBD::AltPg::Database < DBI::BaseDatabase
     #   pg_oid => { :type_name => typname, :dbi_type => DBI::Type::Klass }
     #   ...
     # }
+    #
+    # We perform this query "raw," not as a DBI::StatementHandle, since
+    # we (obviously) haven't loaded the typemappings needed for the higher
+    # layer adapter to function.
+    #
     map = Hash.new(DBI::Type::Varchar)
-    sql = <<'eosql'
-SELECT oid, typname FROM pg_type
-WHERE typtype IN ('b', 'e') and typname NOT LIKE E'\\_%'
+    raw_sth = prepare(<<'eosql')
+SELECT
+  t.oid,
+  t.typname
+FROM
+  pg_catalog.pg_type t
+WHERE
+  t.typtype IN ('b', 'e')
+  AND
+  t.typname NOT LIKE E'\\_%'
 eosql
-    query(sql) do |oid, typname|
+    raw_sth.execute
+    while r = raw_sth.fetch
+      oid, typname = r
       map[oid.to_i] = { :type_name => typname,
                         :dbi_type  => pg_type_to_dbi(typname) }
     end
     map
+  ensure
+    raw_sth.finish rescue nil
   end
 end #-- class DBI::DBD::AltPg::Database
