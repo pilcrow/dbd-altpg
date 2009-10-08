@@ -14,9 +14,6 @@ static VALUE rbx_mAltPg;
 static VALUE rbx_cPq;
 static VALUE rbx_cSt;
 
-#ifdef DBD_PG_PSTMT_OBJECT_ID
-static ID id_object_id;
-#endif
 static ID id_to_s;
 static ID id_to_i;
 static ID id_new;
@@ -53,9 +50,18 @@ struct rbst_struct {
 #define SetStmt(obj, st) \
 	do { ((struct rbst_struct *)DATA_PTR(obj)) = st; } while (0)
 
-#define StmtClearResult(st) \
-	do { if ((st)->res) { PQclear((st)->res); (st)->res = NULL; } } while (0)
-
+static VALUE
+new_dbi_database_error(const char *msg,
+                       VALUE err,
+                       const char *sqlstate)
+{
+	return rb_funcall(rb_path2class("DBI::DatabaseError"),
+	                  id_new,
+	                  3,
+	                  msg ? rb_str_new2(msg) : Qnil,
+	                  err,
+	                  sqlstate ? rb_str_new2(sqlstate) : Qnil);
+}
 
 static VALUE
 convert_PQcmdTuples(PGresult *res)
@@ -70,42 +76,40 @@ convert_PQcmdTuples(PGresult *res)
 	return ret;
 }
 
-static void
-dbd_st_cancel(struct rbst_struct *st)
+PGresult *
+async_PQgetResult(PGconn *conn)
 {
-	if (! st->res) return;
+	int fd, r;
+	fd_set rfds;
+	PGresult *tmp = NULL;
+	PGresult *res = NULL;
 
-	PQclear(st->res);          /* Undo any execute() */
-	st->res = 0;
-	st->ntuples = 0;
+	fd = PQsocket(conn);
 
-	st->row_number = 0;        /* Erase any #fetch     */
+	FD_ZERO(&rfds);
+	FD_SET(fd, &rfds);
+	r = rb_thread_select(fd + 1, &rfds, NULL, NULL, NULL);
 
-	if (st->nparams) {         /* Undo any #bind_param */
-		MEMZERO(st->param_values, char *, st->nparams);
-		MEMZERO(st->param_lengths, int, st->nparams);
+	PQconsumeInput(conn);
+	while (PQisBusy(conn)) {
+		FD_ZERO(&rfds);
+		FD_SET(fd, &rfds);
+		r = rb_thread_select(fd + 1, &rfds, NULL, NULL, NULL);
+		if (r > 0) {
+			PQconsumeInput(conn);
+			continue;
+		}
+		if (r < 0) rb_sys_fail("async_PQgetResult select failed");
+		rb_raise(rb_path2class("DBI::InternalError"),
+		         "async_PQgetResult select() indicated impossible timeout!");
 	}
 
-}
+	while (tmp = PQgetResult(conn)) {
+		if (res) PQclear(res);
+		res = tmp;
+	}
 
-static VALUE
-new_dbi_database_error(const char *msg,
-                       VALUE err,
-                       const char *sqlstate)
-{
-	return rb_funcall(rb_path2class("DBI::DatabaseError"),
-	                  id_new,
-	                  3,
-	                  msg ? rb_str_new2(msg) : Qnil,
-	                  err,
-	                  sqlstate ? rb_str_new2(sqlstate) : Qnil);
-}
-
-static void
-maybe_raise_dbi_error(struct rbst_struct *st, PGresult *res)
-{
-	ExecStatusType status = PQresultStatus(res);
-	switch (status) {
+	switch (PQresultStatus(res)) {
 	case PGRES_TUPLES_OK:
 	case PGRES_COPY_OUT:
 	case PGRES_COPY_IN:
@@ -120,7 +124,7 @@ maybe_raise_dbi_error(struct rbst_struct *st, PGresult *res)
 			            PQresultErrorMessage(res),
 									Qnil,
 			            PQresultErrorField(res, PG_DIAG_SQLSTATE));
-			dbd_st_cancel(st);
+			PQclear(res);
 			rb_exc_raise(e);
 			break; /* not reached */
 		}
@@ -128,6 +132,32 @@ maybe_raise_dbi_error(struct rbst_struct *st, PGresult *res)
 	  rb_raise(rb_path2class("DBI::InternalError"),
 		         "Unknown/unexpected PQresultStatus");
 	}
+
+	return res;
+}
+
+static void
+raise_PQsend_error(PGconn *conn)
+{
+	rb_raise(rb_path2class("DBI::DatabaseError"), PQerrorMessage(conn));
+}
+
+static void
+dbd_st_cancel(struct rbst_struct *st)
+{
+	if (st->res) {
+		PQclear(st->res);          /* Undo any execute() */
+		st->res = NULL;
+		st->ntuples = 0;
+
+		st->row_number = 0;        /* Erase any #fetch     */
+	}
+
+	if (st->nparams) {         /* Undo any #bind_param */
+		MEMZERO(st->param_values, char *, st->nparams);
+		MEMZERO(st->param_lengths, int, st->nparams);
+	}
+
 }
 
 /* ==== Class methods ===================================================== */
@@ -220,8 +250,10 @@ rbpq_do(VALUE self, VALUE query)
 	VALUE rows;
 
 	GetPqStruct(self, pq);
-	res = PQexec(pq->conn, STR2CSTR(query));
-	maybe_raise_dbi_error(NULL, res);
+	if (! PQsendQuery(pq->conn, STR2CSTR(query))) {
+		raise_PQsend_error(pq->conn);
+	}
+	res = async_PQgetResult(pq->conn);
 	rows = convert_PQcmdTuples(res);
 	PQclear(res);
 
@@ -248,8 +280,6 @@ static void
 rbst_s_free(struct rbst_struct *st)
 {
 	if (NULL == st) return;
-
-	// FIXME - cancel in progress?
 	if (st->res) PQclear(st->res);
 	if (st->param_lengths) free(st->param_lengths);
 	if (st->param_values) free(st->param_values);
@@ -269,7 +299,6 @@ rbst_initialize(VALUE self, VALUE parent, VALUE query, VALUE nParams) /* PQprepa
 {
 	struct rbpq_struct *pq;
 	struct rbst_struct *st;
-	PGresult *prepare_result;
 	VALUE plan;
 
 	if (!rb_obj_is_instance_of(parent, rbx_cPq)) {
@@ -293,15 +322,14 @@ rbst_initialize(VALUE self, VALUE parent, VALUE query, VALUE nParams) /* PQprepa
 
 	rb_iv_set(self, "@type_map", rb_iv_get(parent, "@type_map")); // ??? store @parent instead?
 	plan = rb_str_new2("ruby-dbi:altpg:");
-#ifdef DBD_PG_PSTMT_OBJECT_ID
-	rb_str_append(plan, rb_funcall(rb_funcall(self, id_object_id, 0), id_to_s, 0));
-	rb_str_buf_cat(plan, "-", 1);
-#endif
 	rb_str_append(plan, rb_funcall(ULONG2NUM(pq->serial++), id_to_s, 0));
 	rb_iv_set(self, "@plan", plan);
 
-	prepare_result = PQprepare(st->conn, RSTRING_PTR(plan), RSTRING_PTR(query), 0, NULL);
-	maybe_raise_dbi_error(st, prepare_result);
+	if (!PQsendPrepare(st->conn, RSTRING_PTR(plan), RSTRING_PTR(query), 0, NULL)) {
+		raise_PQsend_error(st->conn);
+	}
+	st->res = async_PQgetResult(st->conn);
+
 	rb_iv_set(self, "@params", rb_ary_new());
 
 	return self;
@@ -367,14 +395,14 @@ rbst_execute(VALUE self)
 		}
 	}
 
-	st->res = PQexecPrepared(st->conn,
-	                         STR2CSTR(rb_iv_get(self, "@plan")),
-	                         st->nparams,
-	                         st->param_values,
-	                         st->param_lengths,
-	                         NULL,
-	                         0);   /* text format */
-	maybe_raise_dbi_error(st, st->res);
+	PQsendQueryPrepared(st->conn,
+	                    STR2CSTR(rb_iv_get(self, "@plan")),
+	                    st->nparams,
+	                    st->param_values,
+	                    st->param_lengths,
+	                    NULL,
+	                    0);   /* text format */
+	st->res = async_PQgetResult(st->conn);
 	if (st->nparams) rb_ary_clear(iv_params);
 	st->nfields = PQnfields(st->res);
 	st->ntuples = PQntuples(st->res);
@@ -393,11 +421,14 @@ rbst_finish(VALUE self)
 
 	if (st->conn) {
 		VALUE plan = rb_iv_get(self, "@plan");
-		//printf("@plan is %s\n", STR2CSTR(plan));
 		VALUE deallocate_fmt = rb_str_new2("DEALLOCATE \"%s\"");
-		PGresult *deallocate_result = PQexec(st->conn, STR2CSTR(rb_str_format(1, &plan, deallocate_fmt)));
-		maybe_raise_dbi_error(st, deallocate_result);
-		PQclear(deallocate_result);
+		PGresult *res;
+
+		if (!PQsendQuery(st->conn, STR2CSTR(rb_str_format(1, &plan, deallocate_fmt)))) {
+			raise_PQsend_error(st->conn);
+		}
+		res = async_PQgetResult(st->conn);
+		PQclear(res);
 	}
 
 	return Qnil;
@@ -547,9 +578,6 @@ Init_pq()
 	rb_define_method(rbx_cSt, "result_format",  rbst_result_format, 0);
 	rb_define_method(rbx_cSt, "result_format=", rbst_result_format_set, 1);
 
-#ifdef DBD_PG_PSTMT_OBJECT_ID
-	id_object_id = rb_intern("object_id");
-#endif
 	id_to_s      = rb_intern("to_s");
 	id_to_i      = rb_intern("to_i");
 	id_new       = rb_intern("new");
