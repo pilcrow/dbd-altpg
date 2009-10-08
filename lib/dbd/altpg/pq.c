@@ -23,7 +23,6 @@ static VALUE sym_dbi_type;
 
 struct rbpq_struct { // FIXME - this could just be the pointer...
 	PGconn *conn;
-	int finished;
 	unsigned long serial;  // pstmt name suffix; may wrap
 };
 
@@ -165,10 +164,9 @@ dbd_st_cancel(struct rbst_struct *st)
 static void
 rbpq_s_free(struct rbpq_struct *pq)
 {
-	if (NULL != pq && !pq->finished && NULL != pq->conn) {
+	if (NULL != pq && NULL != pq->conn) {
 		PQfinish(pq->conn);
 		pq->conn = NULL;
-		pq->finished = 1;
 	}
 }
 
@@ -186,20 +184,48 @@ static VALUE
 rbpq_connectdb(VALUE self, VALUE conninfo) /* PQconnectdb */
 {
 	struct rbpq_struct *pq;
+	int fd, r;
+	fd_set fds;
+	PostgresPollingStatusType pollstat;
 
 	Check_SafeStr(conninfo);
 	GetPqStruct(self, pq);
 
-	pq->conn = PQconnectdb(RSTRING_PTR(conninfo)); /* FIXME : connectionstart ... */
+	pq->conn = PQconnectStart(RSTRING_PTR(conninfo));
 	if (NULL == pq->conn) {
 		rb_raise(rb_eNoMemError, "Unable to allocate libPQ structures");
-	} else if (PQstatus(pq->conn) != CONNECTION_OK) {
-		VALUE e = new_dbi_database_error(PQerrorMessage(pq->conn),
-		                                 Qnil,
-		                                 "08000");
-		PQfinish(pq->conn);
-		rb_exc_raise(e);
+	} else if (PQstatus(pq->conn) == CONNECTION_BAD) {
+		goto ConnError;
 	}
+	
+	fd = PQsocket(pq->conn);
+
+	for (pollstat = PGRES_POLLING_WRITING;
+	     pollstat != PGRES_POLLING_OK;
+			 pollstat = PQconnectPoll(pq->conn)) {
+		FD_ZERO(&fds);
+		FD_SET(fd, &fds);
+
+		switch (pollstat) {
+		case PGRES_POLLING_OK:
+			break; /* all done */
+		case PGRES_POLLING_FAILED:
+			goto ConnError;
+			break; /* not reached */
+		case PGRES_POLLING_READING:
+			r = rb_thread_select(fd + 1, &fds, NULL, NULL, NULL);
+			if (r <= 0) goto SelectError;
+			break;
+		case PGRES_POLLING_WRITING:
+			r = rb_thread_select(fd + 1, NULL, &fds, NULL, NULL);
+			if (r <= 0) goto SelectError;
+			break;
+		default:
+			rb_raise(rb_path2class("DBI::InternalError"),
+			         "Non-sensical PGRES_POLLING status encountered");
+		}
+	}
+
 	/*
 	{
 		int i, ntuples;
@@ -222,9 +248,22 @@ rbpq_connectdb(VALUE self, VALUE conninfo) /* PQconnectdb */
 	}
 	*/
 
-	pq->finished = 0;
-
 	return self;
+
+ConnError:
+	{
+		VALUE e = new_dbi_database_error(PQerrorMessage(pq->conn),
+		                                 Qnil,
+		                                 "08000");
+		PQfinish(pq->conn);
+		rb_exc_raise(e);
+	}
+SelectError:
+	{
+		if (r < 0) rb_sys_fail("connectdb select() failed");
+		rb_raise(rb_path2class("DBI::InternalError"),
+		         "connectdb select() indicated impossible timeout!");
+	}
 }
 
 static VALUE
@@ -237,7 +276,6 @@ rbpq_disconnect(VALUE self)
 		PQfinish(pq->conn);
 		pq->conn = NULL;
 	}
-	pq->finished = 1;
 
 	return Qnil;
 }
