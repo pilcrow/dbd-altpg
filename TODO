@@ -1,33 +1,26 @@
+TODO:
+ - Test cases
 
---[ General ] --------------
+ - Documentation
 
- 1. Document, document document
-    1.1 inline rdoc
-    1.2 general overview and feature priorities
+ - Binary protocol (not text) support
+   ?? Unclear if packing/unpacking will be faster than stringifying
 
- 2. Test cases
+DONE:
+ - parameterized query support
 
- 3. So-called async execution (DONE)
-    As in dbd-pg handle['pg_async'] = true
+ - dbd_db.do() direct (unprepared) execution implementation
 
---[ AltPg::Database ] ------
- 1. #ping(), etc. implementation
+ - workaround dbi-0.4.3 default String parameter conversion
+   It quotes, but we want the backend to do that
 
- 2. #do() implementation (direct exec) (DONE)
+ - support precision, scale in dbd_db.columns, dbd_st.column_info
+   (without extraneous SQL lookup)
 
---[ AltPg::Statement ] -----
+ - 'async' connection and execution
+   i.e., don't block ruby threads
 
- 1. column_info() precision, scale
-    xref perl-DBD-Pg dbdimp.c here
+ - dbd_st.finish implies DEALLOCATE
+   n.b.: forgotten statements are never DEALLOCATEd, and that's ok
 
- 2. binary protocol support (vs. text mode)
-
- 3. parameterized query support (DONE)
-    (??) Call describePrepared to find out param nos. in advance?
-    (??) Keep @params and just use that?
-    (??) Use @params the first time, then remember nParams for efficiency?
-
- 4. prepared statement name collision remediation (DONE)
-
- 5. (??) DEALLOCATE upon finish, DEALLOCATE forgotten statements (DONE)
-    ... but not DEALLOCATEing forgotten statements ...
+ - avoid PREPAREd statement name collision
