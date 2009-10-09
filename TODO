@@ -6,6 +6,13 @@ TODO:
  - Binary protocol (not text) support
    ?? Unclear if packing/unpacking will be faster than stringifying
 
+ - h['pg_client_encoding']
+
+ - BLOB support
+   ?? as blob objects?
+
+ - array support
+
 DONE:
  - parameterized query support
 
