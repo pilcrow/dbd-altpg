@@ -65,14 +65,24 @@ eosql
     make_dbh.prepare(<<'eosql') do |sth|
 SELECT
   a.attname                    AS name,
-  a.atttypid                   AS pg_type,
   t.typname                    AS type_name,
+  CASE
+    WHEN a.attlen > 0 THEN a.attlen
+    WHEN a.atttypmod > 65535 THEN a.atttypmod >> 16
+    WHEN a.atttypmod >= 4 THEN a.atttypmod - 4
+    ELSE NULL
+  END                          AS precision,
+  CASE
+    WHEN a.attlen <= 0 AND a.atttypmod > 65535 THEN (a.atttypmod & 65535) - 4
+    ELSE NULL
+  END                          AS scale,
   NOT a.attnotnull             AS nullable,
-  a.attlen                     AS len,
   d.adsrc                      AS default,
   COALESCE(ii.indexed, false)  AS indexed,
   COALESCE(iu.unique, false)   AS unique,
-  COALESCE(ip.primary, false)  AS primary
+  COALESCE(ip.primary, false)  AS primary,
+  a.atttypid                   AS pg_type,
+  a.attlen                     AS pg_typlen
 FROM
   pg_catalog.pg_class c
   INNER JOIN
@@ -121,9 +131,11 @@ FROM
 WHERE
   a.attnum > 0                          -- regular column
     AND
-  c.relkind IN ('r','v')                -- of a TABLE or VIEW object
+  NOT a.attisdropped                    -- which has not been dropped
     AND
-  c.relname = ?                         -- named ?, which object is
+  c.relkind IN ('r','v')                -- belonging to a TABLE or VIEW
+    AND
+  c.relname = ?                         -- named ?, which TABLE/VIEW is
     AND
   pg_catalog.pg_table_is_visible(c.oid) -- visible without qualification
 ORDER BY
@@ -172,7 +184,6 @@ eosql
     when 'enum'                      then DBI::Type::Varchar
     else                                  DBI::Type::Varchar
     end
-
   end
 
   def generate_type_map
