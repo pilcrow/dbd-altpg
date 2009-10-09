@@ -374,6 +374,7 @@ rbst_initialize(VALUE self, VALUE parent, VALUE query, VALUE nParams) /* PQprepa
 {
 	struct rbpq_struct *pq;
 	struct rbst_struct *st;
+	PGresult *tmp_result;
 	VALUE plan;
 
 	if (!rb_obj_is_instance_of(parent, rbx_cPq)) {
@@ -403,7 +404,8 @@ rbst_initialize(VALUE self, VALUE parent, VALUE query, VALUE nParams) /* PQprepa
 	if (!PQsendPrepare(st->conn, RSTRING_PTR(plan), RSTRING_PTR(query), 0, NULL)) {
 		raise_PQsend_error(st->conn);
 	}
-	st->res = async_PQgetResult(st->conn);
+	tmp_result = async_PQgetResult(st->conn);
+	PQclear(tmp_result);
 
 	rb_iv_set(self, "@params", rb_ary_new());
 
