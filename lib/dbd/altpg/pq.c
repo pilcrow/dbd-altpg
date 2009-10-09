@@ -144,6 +144,16 @@ raise_PQsend_error(PGconn *conn)
 	rb_raise(rb_path2class("DBI::DatabaseError"), PQerrorMessage(conn));
 }
 
+static PGresult *
+dbd_db_direct_exec(struct rbpq_struct *db, const char *query)
+{
+	if (! PQsendQuery(db->conn, query)) {
+		raise_PQsend_error(db->conn);
+	}
+
+	return async_PQgetResult(db->conn);
+}
+
 static void
 dbd_st_cancel(struct rbst_struct *st)
 {
@@ -291,14 +301,37 @@ rbpq_do(VALUE self, VALUE query)
 	VALUE rows;
 
 	GetPqStruct(self, pq);
-	if (! PQsendQuery(pq->conn, STR2CSTR(query))) {
-		raise_PQsend_error(pq->conn);
-	}
-	res = async_PQgetResult(pq->conn);
+	res = dbd_db_direct_exec(pq, STR2CSTR(query));
 	rows = convert_PQcmdTuples(res);
 	PQclear(res);
 
 	return rows;
+}
+
+static VALUE
+rbpq_commit(VALUE self)
+{
+	struct rbpq_struct *pq;
+	PGresult *res;
+
+	GetPqStruct(self, pq);
+	res = dbd_db_direct_exec(pq, "COMMIT");
+	PQclear(res);
+
+	return Qnil;
+}
+
+static VALUE
+rbpq_rollback(VALUE self)
+{
+	struct rbpq_struct *pq;
+	PGresult *res;
+
+	GetPqStruct(self, pq);
+	res = dbd_db_direct_exec(pq, "ROLLBACK");
+	PQclear(res);
+
+	return Qnil;
 }
 
 static VALUE
@@ -322,8 +355,9 @@ rbst_s_free(struct rbst_struct *st)
 {
 	if (NULL == st) return;
 	if (st->res) PQclear(st->res);
-	if (st->param_lengths) free(st->param_lengths);
-	if (st->param_values) free(st->param_values);
+	if (st->param_lengths) xfree(st->param_lengths);
+	if (st->param_values) xfree(st->param_values);
+	xfree(st);
 }
 
 static VALUE
@@ -540,16 +574,16 @@ rbst_column_info(VALUE self)
 	for (i = 0; i < st->nfields; ++i) {
 		VALUE col = rb_hash_new();
 		VALUE type_map_entry;
-		//int fmod;
-		Oid ftype;
-
-		//fmod  = PQfmod(st->res, i);  // XXX - T.E. compute ftypes in advance?
+		int typmod, typlen;
+		VALUE precision = Qnil;
+		VALUE scale = Qnil;
+		Oid type_oid;
 
 		rb_hash_aset(col, rb_str_new2("name"),
 		                  rb_str_new2(PQfname(st->res, i)));
 
-		ftype = PQftype(st->res, i);
-		type_map_entry = rb_hash_aref(iv_type_map, INT2FIX(ftype));
+		type_oid = PQftype(st->res, i);
+		type_map_entry = rb_hash_aref(iv_type_map, INT2FIX(type_oid));
 
 		// col['type_name'] = @type_map[16][:type_name]
 		rb_hash_aset(col, rb_str_new2("type_name"),
@@ -558,12 +592,20 @@ rbst_column_info(VALUE self)
 		rb_hash_aset(col, rb_str_new2("dbi_type"),
 		                  rb_hash_aref(type_map_entry, sym_dbi_type));
 
-		// FIXME - need to look up in case new type added!
-		// 
-		// Look at perl-DBD-Pg's computation of precision/scale...
-		//
-		//rb_hash_aset(col, rb_str_new2("precision"), INT2FIX(64));
-		//rb_hash_aset(col, rb_str_new2("scale"), Qnil);
+		typmod = PQfmod(st->res, i);
+		typlen = PQfsize(st->res, i);
+
+		if (typlen > 0) {
+			precision = INT2FIX(typlen);
+		} else if (typmod > 0xffff) {
+			precision = INT2FIX(typmod >> 16);
+			scale     = INT2FIX((typmod & 0xffff) - 4);
+		} else if (typmod > 4) {
+			precision = INT2FIX(typmod - 4);
+		}
+
+		rb_hash_aset(col, rb_str_new2("precision"), precision);
+		rb_hash_aset(col, rb_str_new2("scale"), scale);
 
 		rb_ary_store(ret, i, col);
 	}
@@ -603,8 +645,10 @@ Init_pq()
 
 	rb_define_alloc_func(rbx_cPq, rbpq_s_alloc);
 	rb_define_method(rbx_cPq, "connectdb", rbpq_connectdb, 1); /* PQconnectdb */
-	rb_define_method(rbx_cPq, "disconnect", rbpq_disconnect, 0); /* PQfinish */
 	rb_define_method(rbx_cPq, "database_name", rbpq_dbname, 0); /* PQdb */
+	rb_define_method(rbx_cPq, "disconnect", rbpq_disconnect, 0); /* PQfinish */
+	rb_define_method(rbx_cPq, "commit", rbpq_commit, 0);
+	rb_define_method(rbx_cPq, "rollback", rbpq_rollback, 0);
 	rb_define_method(rbx_cPq, "do", rbpq_do, 1); /* PQdb */
 
 	rb_define_alloc_func(rbx_cSt, rbst_s_alloc);
