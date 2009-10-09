@@ -196,7 +196,7 @@ eosql
     # we (obviously) haven't loaded the typemappings needed for the higher
     # layer adapter to function.
     #
-    map = Hash.new(DBI::Type::Varchar)
+    map = Hash.new({:type_name => 'unknown', :dbi_type => DBI::Type::Varchar})
     raw_sth = prepare(<<'eosql')
 SELECT
   t.oid,
