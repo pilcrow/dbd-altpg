@@ -37,7 +37,7 @@ static VALUE sym_dbi_type;
 
 struct AltPg_Db {
 	PGconn *conn;
-	unsigned long serial;  // pstmt name suffix; may wrap
+	unsigned long serial;  /* pstmt name suffix; may wrap */
 };
 
 struct AltPg_St {
@@ -158,6 +158,7 @@ raise_PQsend_error(PGconn *conn)
 	rb_raise(rb_path2class("DBI::DatabaseError"), PQerrorMessage(conn));
 }
 
+/* Unprepared query execution.  (internal) */
 static void
 altpg_db_direct_exec(struct AltPg_Db *db, VALUE *out, const char *query)
 {
@@ -174,68 +175,68 @@ altpg_db_direct_exec(struct AltPg_Db *db, VALUE *out, const char *query)
 	PQclear(res);
 }
 
+/* Clear any in-progress query, noop if redundant.  (internal) */
 static void
 altpg_st_cancel(struct AltPg_St *st)
 {
 	if (st->res) {
-		PQclear(st->res);          /* Undo any execute() */
+		PQclear(st->res);        /* Undo any execute()   */
 		st->res = NULL;
 		st->ntuples = 0;
 
-		st->row_number = 0;        /* Erase any #fetch     */
+		st->row_number = 0;      /* Erase any #fetch     */
 	}
 
 	if (st->nparams) {         /* Undo any #bind_param */
 		MEMZERO(st->param_values, char *, st->nparams);
 		MEMZERO(st->param_lengths, int, st->nparams);
 	}
-
 }
 
 /* ==== Class methods ===================================================== */
 
 static void
-AltPg_Db_s_free(struct AltPg_Db *pq)
+AltPg_Db_s_free(struct AltPg_Db *db)
 {
-	if (NULL != pq && NULL != pq->conn) {
-		PQfinish(pq->conn);
-		pq->conn = NULL;
+	if (NULL != db && NULL != db->conn) {
+		PQfinish(db->conn);
+		db->conn = NULL;
 	}
 }
 
 static VALUE
 AltPg_Db_s_alloc(VALUE klass)
 {
-	struct AltPg_Db *pq = ALLOC(struct AltPg_Db);
-	memset(pq, '\0', sizeof(struct AltPg_Db));
-	return Data_Wrap_Struct(klass, 0, AltPg_Db_s_free, pq);
+	struct AltPg_Db *db = ALLOC(struct AltPg_Db);
+	memset(db, '\0', sizeof(struct AltPg_Db));
+	return Data_Wrap_Struct(klass, 0, AltPg_Db_s_free, db);
 }
 
 /* ==== Instance methods ================================================== */
 
 static VALUE
-AltPg_Db_connectdb(VALUE self, VALUE conninfo) /* PQconnectdb */
+AltPg_Db_connectdb(VALUE self, VALUE conninfo)
 {
-	struct AltPg_Db *pq;
+	struct AltPg_Db *db;
 	int fd, r;
 	fd_set fds;
 	PostgresPollingStatusType pollstat;
 
 	Check_SafeStr(conninfo);
-	GetPqStruct(self, pq);
+	GetPqStruct(self, db);
 
-	pq->conn = PQconnectStart(RSTRING_PTR(conninfo));
-	if (NULL == pq->conn) {
+	db->conn = PQconnectStart(RSTRING_PTR(conninfo));
+	if (NULL == db->conn) {
 		rb_raise(rb_eNoMemError, "Unable to allocate libPQ structures");
-	} else if (PQstatus(pq->conn) == CONNECTION_BAD) {
+	} else if (PQstatus(db->conn) == CONNECTION_BAD) {
 		goto ConnError;
 	}
 	
-	fd = PQsocket(pq->conn);
+	fd = PQsocket(db->conn);
 
 	for (pollstat = PGRES_POLLING_WRITING;
 	     pollstat != PGRES_POLLING_OK;
-			 pollstat = PQconnectPoll(pq->conn)) {
+			 pollstat = PQconnectPoll(db->conn)) {
 		FD_ZERO(&fds);
 		FD_SET(fd, &fds);
 
@@ -263,7 +264,7 @@ AltPg_Db_connectdb(VALUE self, VALUE conninfo) /* PQconnectdb */
 	{
 		int i, ntuples;
 		VALUE map = rb_hash_new();
-		PGresult *r = PQexecParams(pq->conn, "SELECT oid, typname FROM pg_type", 0, NULL, NULL, NULL, NULL, 0);
+		PGresult *r = PQexecParams(db->conn, "SELECT oid, typname FROM pg_type", 0, NULL, NULL, NULL, NULL, 0);
 		maybe_raise_dbi_error(NULL, r);
 
 		ntuples = PQntuples(r);
@@ -285,10 +286,10 @@ AltPg_Db_connectdb(VALUE self, VALUE conninfo) /* PQconnectdb */
 
 ConnError:
 	{
-		VALUE e = new_dbi_database_error(PQerrorMessage(pq->conn),
+		VALUE e = new_dbi_database_error(PQerrorMessage(db->conn),
 		                                 Qnil,
 		                                 "08000");
-		PQfinish(pq->conn);
+		PQfinish(db->conn);
 		rb_exc_raise(e);
 	}
 SelectError:
@@ -302,12 +303,12 @@ SelectError:
 static VALUE
 AltPg_Db_disconnect(VALUE self)
 {
-	struct AltPg_Db *pq;
+	struct AltPg_Db *db;
 
-	GetPqStruct(self, pq);
-	if (pq->conn) {
-		PQfinish(pq->conn);
-		pq->conn = NULL;
+	GetPqStruct(self, db);
+	if (db->conn) {
+		PQfinish(db->conn);
+		db->conn = NULL;
 	}
 
 	return Qnil;
@@ -316,11 +317,11 @@ AltPg_Db_disconnect(VALUE self)
 static VALUE
 AltPg_Db_do(VALUE self, VALUE query)
 {
-	struct AltPg_Db *pq;
+	struct AltPg_Db *db;
 	VALUE rows;
 
-	GetPqStruct(self, pq);
-	altpg_db_direct_exec(pq, &rows, STR2CSTR(query));
+	GetPqStruct(self, db);
+	altpg_db_direct_exec(db, &rows, STR2CSTR(query));
 
 	return rows;
 }
@@ -328,10 +329,10 @@ AltPg_Db_do(VALUE self, VALUE query)
 static VALUE
 AltPg_Db_commit(VALUE self)
 {
-	struct AltPg_Db *pq;
+	struct AltPg_Db *db;
 
-	GetPqStruct(self, pq);
-	altpg_db_direct_exec(pq, NULL, "COMMIT");
+	GetPqStruct(self, db);
+	altpg_db_direct_exec(db, NULL, "COMMIT");
 
 	return Qnil;
 }
@@ -339,10 +340,10 @@ AltPg_Db_commit(VALUE self)
 static VALUE
 AltPg_Db_rollback(VALUE self)
 {
-	struct AltPg_Db *pq;
+	struct AltPg_Db *db;
 
-	GetPqStruct(self, pq);
-	altpg_db_direct_exec(pq, NULL, "ROLLBACK");
+	GetPqStruct(self, db);
+	altpg_db_direct_exec(db, NULL, "ROLLBACK");
 
 	return Qnil;
 }
@@ -350,12 +351,12 @@ AltPg_Db_rollback(VALUE self)
 static VALUE
 AltPg_Db_dbname(VALUE self)
 {
-	struct AltPg_Db *pq;
+	struct AltPg_Db *db;
 	VALUE ret;
 
-	GetPqStruct(self, pq); // FIXME - internal error if already finished
+	GetPqStruct(self, db); // FIXME - internal error if already finished
 
-	ret = rb_str_new2(PQdb(pq->conn));
+	ret = rb_str_new2(PQdb(db->conn));
 	OBJ_TAINT(ret);
 
 	return ret;
@@ -385,7 +386,7 @@ AltPg_St_s_alloc(VALUE klass)
 static VALUE
 AltPg_St_initialize(VALUE self, VALUE parent, VALUE query, VALUE nParams) /* PQprepare */
 {
-	struct AltPg_Db *pq;
+	struct AltPg_Db *db;
 	struct AltPg_St *st;
 	PGresult *tmp_result;
 	VALUE plan;
@@ -397,9 +398,9 @@ AltPg_St_initialize(VALUE self, VALUE parent, VALUE query, VALUE nParams) /* PQp
 
 	Check_SafeStr(query);
 	GetStmt(self, st);
-	GetPqStruct(parent, pq);
+	GetPqStruct(parent, db);
 
-	st->conn = pq->conn;
+	st->conn = db->conn;
 	st->nparams = FIX2INT(nParams);
 	if (st->nparams < 0) {
 		rb_raise(rb_eTypeError, "Number of parameters must be >= 0");
@@ -411,7 +412,7 @@ AltPg_St_initialize(VALUE self, VALUE parent, VALUE query, VALUE nParams) /* PQp
 
 	rb_iv_set(self, "@type_map", rb_iv_get(parent, "@type_map")); // ??? store @parent instead?
 	plan = rb_str_new2("ruby-dbi:altpg:");
-	rb_str_append(plan, rb_funcall(ULONG2NUM(pq->serial++), id_to_s, 0));
+	rb_str_append(plan, rb_funcall(ULONG2NUM(db->serial++), id_to_s, 0));
 	rb_iv_set(self, "@plan", plan);
 
 	if (!PQsendPrepare(st->conn, RSTRING_PTR(plan), RSTRING_PTR(query), 0, NULL)) {
@@ -465,7 +466,7 @@ AltPg_St_execute(VALUE self)
 {
 	struct AltPg_St *st;
 	VALUE iv_params;
-	int i;
+	int i, send_ok;
 
 	GetStmt(self, st);
 
@@ -485,13 +486,16 @@ AltPg_St_execute(VALUE self)
 		}
 	}
 
-	PQsendQueryPrepared(st->conn,
-	                    STR2CSTR(rb_iv_get(self, "@plan")),
-	                    st->nparams,
-	                    st->param_values,
-	                    st->param_lengths,
-	                    NULL,
-	                    0);   /* text format */
+	send_ok = PQsendQueryPrepared(st->conn,
+	                              STR2CSTR(rb_iv_get(self, "@plan")),
+	                              st->nparams,
+	                              st->param_values,
+	                              st->param_lengths,
+	                              NULL,
+	                              0);   /* text format */
+	if (! send_ok) {
+			raise_PQsend_error(st->conn);
+	}
 	st->res = async_PQgetResult(st->conn);
 	if (st->nparams) rb_ary_clear(iv_params);
 	st->nfields = PQnfields(st->res);
@@ -677,10 +681,10 @@ Init_pq()
 	rb_define_method(rbx_cSt, "result_format",  AltPg_St_result_format, 0);
 	rb_define_method(rbx_cSt, "result_format=", AltPg_St_result_format_set, 1);
 
-	id_to_s      = rb_intern("to_s");
-	id_to_i      = rb_intern("to_i");
-	id_new       = rb_intern("new");
-	id_inspect   = rb_intern("inspect");
+	id_to_s       = rb_intern("to_s");
+	id_to_i       = rb_intern("to_i");
+	id_new        = rb_intern("new");
+	id_inspect    = rb_intern("inspect");
 	sym_type_name = ID2SYM(rb_intern("type_name"));
 	sym_dbi_type  = ID2SYM(rb_intern("dbi_type"));
 }
