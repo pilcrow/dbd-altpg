@@ -41,8 +41,8 @@ struct AltPg_Db {
 };
 
 struct AltPg_St {
-	PGconn *conn;
-	PGresult *res;
+	PGconn *conn;              /* NULL if finished                       */
+	PGresult *res;             /* non-NULL if executed and not cancelled */
 	int nparams;
 	char **param_values;
 	int *param_lengths;
@@ -53,15 +53,6 @@ struct AltPg_St {
 };
 
 /* ==== Helper functions ================================================== */
-
-#define GetPqStruct(obj, out) \
-	do { out = (struct AltPg_Db *)DATA_PTR(obj); } while (0)
-
-#define GetStmt(obj, out) \
-	do { out = (struct AltPg_St *)DATA_PTR(obj); } while (0)
-
-#define SetStmt(obj, st) \
-	do { ((struct AltPg_St *)DATA_PTR(obj)) = st; } while (0)
 
 static VALUE
 new_dbi_database_error(const char *msg,
@@ -175,6 +166,18 @@ altpg_db_direct_exec(struct AltPg_Db *db, VALUE *out, const char *query)
 	PQclear(res);
 }
 
+static struct AltPg_St *
+altpg_st_get_unfinished(VALUE self)
+{
+	struct AltPg_St *st;
+
+	Data_Get_Struct(self, struct AltPg_St, st);
+	if (NULL == st->conn) {
+		rb_raise(rb_path2class("DBI::ProgrammingError"), "method called on finished statement handle");
+	}
+	return st;
+}
+
 /* Clear any in-progress query, noop if redundant.  (internal) */
 static void
 altpg_st_cancel(struct AltPg_St *st)
@@ -223,7 +226,7 @@ AltPg_Db_connectdb(VALUE self, VALUE conninfo)
 	PostgresPollingStatusType pollstat;
 
 	Check_SafeStr(conninfo);
-	GetPqStruct(self, db);
+	Data_Get_Struct(self, struct AltPg_Db, db);
 
 	db->conn = PQconnectStart(RSTRING_PTR(conninfo));
 	if (NULL == db->conn) {
@@ -305,7 +308,7 @@ AltPg_Db_disconnect(VALUE self)
 {
 	struct AltPg_Db *db;
 
-	GetPqStruct(self, db);
+	Data_Get_Struct(self, struct AltPg_Db, db);
 	if (db->conn) {
 		PQfinish(db->conn);
 		db->conn = NULL;
@@ -320,7 +323,7 @@ AltPg_Db_do(VALUE self, VALUE query)
 	struct AltPg_Db *db;
 	VALUE rows;
 
-	GetPqStruct(self, db);
+	Data_Get_Struct(self, struct AltPg_Db, db);
 	altpg_db_direct_exec(db, &rows, STR2CSTR(query));
 
 	return rows;
@@ -331,7 +334,7 @@ AltPg_Db_commit(VALUE self)
 {
 	struct AltPg_Db *db;
 
-	GetPqStruct(self, db);
+	Data_Get_Struct(self, struct AltPg_Db, db);
 	altpg_db_direct_exec(db, NULL, "COMMIT");
 
 	return Qnil;
@@ -342,7 +345,7 @@ AltPg_Db_rollback(VALUE self)
 {
 	struct AltPg_Db *db;
 
-	GetPqStruct(self, db);
+	Data_Get_Struct(self, struct AltPg_Db, db);
 	altpg_db_direct_exec(db, NULL, "ROLLBACK");
 
 	return Qnil;
@@ -354,8 +357,9 @@ AltPg_Db_dbname(VALUE self)
 	struct AltPg_Db *db;
 	VALUE ret;
 
-	GetPqStruct(self, db); // FIXME - internal error if already finished
+	Data_Get_Struct(self, struct AltPg_Db, db);
 
+	/* FIXME - internalerror if NULL == db->conn */
 	ret = rb_str_new2(PQdb(db->conn));
 	OBJ_TAINT(ret);
 
@@ -396,10 +400,14 @@ AltPg_St_initialize(VALUE self, VALUE parent, VALUE query, VALUE nParams) /* PQp
 		         "Expected argument of type DBI::DBD::AltPg::Database");
 	}
 
+	Data_Get_Struct(self, struct AltPg_St, st); /* later, our own data_get */
+	Data_Get_Struct(parent, struct AltPg_Db, db);
 	Check_SafeStr(query);
-	GetStmt(self, st);
-	GetPqStruct(parent, db);
 
+	if (!db || !db->conn) {
+		rb_raise(rb_path2class("DBI::InternalError"),
+		         "Attempt to create AltPg::Statement from invalid AltPg::Database (db %p, db->conn %p)", db, db ? db->conn : NULL);
+	}
 	st->conn = db->conn;
 	st->nparams = FIX2INT(nParams);
 	if (st->nparams < 0) {
@@ -431,7 +439,7 @@ AltPg_St_bind_param(VALUE self, VALUE index, VALUE val, VALUE ignored)
 {
 	struct AltPg_St *st;
 
-	GetStmt(self, st);
+	st = altpg_st_get_unfinished(self);
 
 	/* ??? No bounds checking on index yet.  If you want to balloon
 	 *     @params, go ahead.
@@ -454,7 +462,7 @@ AltPg_St_cancel(VALUE self)
 {
 	struct AltPg_St *st;
 
-	GetStmt(self, st);
+	st = altpg_st_get_unfinished(self);
 	altpg_st_cancel(st);
 	rb_ary_clear(rb_iv_get(self, "@params"));
 
@@ -468,8 +476,7 @@ AltPg_St_execute(VALUE self)
 	VALUE iv_params;
 	int i, send_ok;
 
-	GetStmt(self, st);
-
+	st = altpg_st_get_unfinished(self);
 	altpg_st_cancel(st);
 
 	iv_params = rb_iv_get(self, "@params");
@@ -493,7 +500,7 @@ AltPg_St_execute(VALUE self)
 	                              st->param_lengths,
 	                              NULL,
 	                              0);   /* text format */
-	if (! send_ok) {
+	if (!send_ok) {
 			raise_PQsend_error(st->conn);
 	}
 	st->res = async_PQgetResult(st->conn);
@@ -509,7 +516,7 @@ AltPg_St_finish(VALUE self)
 {
 	struct AltPg_St *st;
 
-	GetStmt(self, st);
+	st = altpg_st_get_unfinished(self);
 
 	altpg_st_cancel(st);
 
@@ -536,7 +543,7 @@ AltPg_St_fetch(VALUE self)
 	/* XXX - store @row rather than making anew each time? */
 	int i;
 
-	GetStmt(self, st);
+	st = altpg_st_get_unfinished(self);
 
 	if (!st->res || st->row_number >= st->ntuples) {
 		return Qnil;
@@ -561,7 +568,8 @@ AltPg_St_rows(VALUE self)
 {
 	struct AltPg_St *st;
 
-	GetStmt(self, st);
+	st = altpg_st_get_unfinished(self);
+
 	return convert_PQcmdTuples(st->res);
 }
 
@@ -586,7 +594,7 @@ AltPg_St_column_info(VALUE self)
 	VALUE iv_type_map;
 	int i;
 
-	GetStmt(self, st);
+	st = altpg_st_get_unfinished(self);
 	ret = rb_ary_new2(st->nfields);
 	iv_type_map = rb_iv_get(self, "@type_map");
 
@@ -636,7 +644,9 @@ static VALUE
 AltPg_St_result_format(VALUE self)
 {
 	struct AltPg_St *st;
-	GetStmt(self, st);
+
+	st = altpg_st_get_unfinished(self);
+
 	return INT2FIX(st->resultFormat);
 }
 
@@ -646,8 +656,7 @@ AltPg_St_result_format_set(VALUE self, VALUE fmtcode)
 {
 	struct AltPg_St *st;
 
-	GetStmt(self, st);
-
+	st = altpg_st_get_unfinished(self);
 	st->resultFormat = FIX2INT(fmtcode);
 
 	return Qnil;
