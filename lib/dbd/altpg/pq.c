@@ -3,6 +3,20 @@
 //#include <rubyio.h>
 //#include <st.h>
 
+/* Code Map
+ *
+ * struct AltPg_Db .... DBI::DBD::AltPg::Database < DBI::BaseDatabase
+ * struct AltPg_St .... DBI::DBD::AltPg::Statement < DBI::BaseStatement
+ *
+ * AltPg_Db_s_foo ..... DBI::DBD::AltPg::Database#foo (singleton method)
+ * AltPg_Db_bar ....... DBI::DBD::AltPg::Database#bar
+ *
+ * altpg_db_* ......... Internal helper operating on `struct AltPg_Db'
+ * altpg_st_* ......... ""                           `struct AltPg_St'
+ *
+ *
+ */
+
 #ifndef RSTRING_PTR
 #define RSTRING_PTR(string) RSTRING(string)->ptr
 #endif
@@ -10,9 +24,9 @@
 #define RSTRING_LEN(string) RSTRING(string)->len
 #endif
 
-static VALUE rbx_mAltPg;
-static VALUE rbx_cPq;
-static VALUE rbx_cSt;
+static VALUE rbx_mAltPg;  /* module DBI::DBD::AltPg           */
+static VALUE rbx_cDb;     /* class DBI::DBD::AltPg::Database  */
+static VALUE rbx_cSt;     /* class DBI::DBD::AltPg::Statement */
 
 static ID id_to_s;
 static ID id_to_i;
@@ -21,12 +35,12 @@ static ID id_inspect;
 static VALUE sym_type_name;
 static VALUE sym_dbi_type;
 
-struct rbpq_struct { // FIXME - this could just be the pointer...
+struct AltPg_Db {
 	PGconn *conn;
 	unsigned long serial;  // pstmt name suffix; may wrap
 };
 
-struct rbst_struct {
+struct AltPg_St {
 	PGconn *conn;
 	PGresult *res;
 	int nparams;
@@ -41,13 +55,13 @@ struct rbst_struct {
 /* ==== Helper functions ================================================== */
 
 #define GetPqStruct(obj, out) \
-	do { out = (struct rbpq_struct *)DATA_PTR(obj); } while (0)
+	do { out = (struct AltPg_Db *)DATA_PTR(obj); } while (0)
 
 #define GetStmt(obj, out) \
-	do { out = (struct rbst_struct *)DATA_PTR(obj); } while (0)
+	do { out = (struct AltPg_St *)DATA_PTR(obj); } while (0)
 
 #define SetStmt(obj, st) \
-	do { ((struct rbst_struct *)DATA_PTR(obj)) = st; } while (0)
+	do { ((struct AltPg_St *)DATA_PTR(obj)) = st; } while (0)
 
 static VALUE
 new_dbi_database_error(const char *msg,
@@ -144,18 +158,24 @@ raise_PQsend_error(PGconn *conn)
 	rb_raise(rb_path2class("DBI::DatabaseError"), PQerrorMessage(conn));
 }
 
-static PGresult *
-dbd_db_direct_exec(struct rbpq_struct *db, const char *query)
+static void
+altpg_db_direct_exec(struct AltPg_Db *db, VALUE *out, const char *query)
 {
+	PGresult *res;
+
 	if (! PQsendQuery(db->conn, query)) {
 		raise_PQsend_error(db->conn);
 	}
+	res = async_PQgetResult(db->conn);
+	if (out) {
+		*out = convert_PQcmdTuples(res);
+	}
 
-	return async_PQgetResult(db->conn);
+	PQclear(res);
 }
 
 static void
-dbd_st_cancel(struct rbst_struct *st)
+altpg_st_cancel(struct AltPg_St *st)
 {
 	if (st->res) {
 		PQclear(st->res);          /* Undo any execute() */
@@ -175,7 +195,7 @@ dbd_st_cancel(struct rbst_struct *st)
 /* ==== Class methods ===================================================== */
 
 static void
-rbpq_s_free(struct rbpq_struct *pq)
+AltPg_Db_s_free(struct AltPg_Db *pq)
 {
 	if (NULL != pq && NULL != pq->conn) {
 		PQfinish(pq->conn);
@@ -184,19 +204,19 @@ rbpq_s_free(struct rbpq_struct *pq)
 }
 
 static VALUE
-rbpq_s_alloc(VALUE klass)
+AltPg_Db_s_alloc(VALUE klass)
 {
-	struct rbpq_struct *pq = ALLOC(struct rbpq_struct);
-	memset(pq, '\0', sizeof(struct rbpq_struct));
-	return Data_Wrap_Struct(klass, 0, rbpq_s_free, pq);
+	struct AltPg_Db *pq = ALLOC(struct AltPg_Db);
+	memset(pq, '\0', sizeof(struct AltPg_Db));
+	return Data_Wrap_Struct(klass, 0, AltPg_Db_s_free, pq);
 }
 
 /* ==== Instance methods ================================================== */
 
 static VALUE
-rbpq_connectdb(VALUE self, VALUE conninfo) /* PQconnectdb */
+AltPg_Db_connectdb(VALUE self, VALUE conninfo) /* PQconnectdb */
 {
-	struct rbpq_struct *pq;
+	struct AltPg_Db *pq;
 	int fd, r;
 	fd_set fds;
 	PostgresPollingStatusType pollstat;
@@ -280,9 +300,9 @@ SelectError:
 }
 
 static VALUE
-rbpq_disconnect(VALUE self)
+AltPg_Db_disconnect(VALUE self)
 {
-	struct rbpq_struct *pq;
+	struct AltPg_Db *pq;
 
 	GetPqStruct(self, pq);
 	if (pq->conn) {
@@ -294,50 +314,43 @@ rbpq_disconnect(VALUE self)
 }
 
 static VALUE
-rbpq_do(VALUE self, VALUE query)
+AltPg_Db_do(VALUE self, VALUE query)
 {
-	struct rbpq_struct *pq;
-	PGresult *res;
+	struct AltPg_Db *pq;
 	VALUE rows;
 
 	GetPqStruct(self, pq);
-	res = dbd_db_direct_exec(pq, STR2CSTR(query));
-	rows = convert_PQcmdTuples(res);
-	PQclear(res);
+	altpg_db_direct_exec(pq, &rows, STR2CSTR(query));
 
 	return rows;
 }
 
 static VALUE
-rbpq_commit(VALUE self)
+AltPg_Db_commit(VALUE self)
 {
-	struct rbpq_struct *pq;
-	PGresult *res;
+	struct AltPg_Db *pq;
 
 	GetPqStruct(self, pq);
-	res = dbd_db_direct_exec(pq, "COMMIT");
-	PQclear(res);
+	altpg_db_direct_exec(pq, NULL, "COMMIT");
 
 	return Qnil;
 }
 
 static VALUE
-rbpq_rollback(VALUE self)
+AltPg_Db_rollback(VALUE self)
 {
-	struct rbpq_struct *pq;
-	PGresult *res;
+	struct AltPg_Db *pq;
 
 	GetPqStruct(self, pq);
-	res = dbd_db_direct_exec(pq, "ROLLBACK");
-	PQclear(res);
+	altpg_db_direct_exec(pq, NULL, "ROLLBACK");
 
 	return Qnil;
 }
 
 static VALUE
-rbpq_dbname(VALUE self)
+AltPg_Db_dbname(VALUE self)
 {
-	struct rbpq_struct *pq;
+	struct AltPg_Db *pq;
 	VALUE ret;
 
 	GetPqStruct(self, pq); // FIXME - internal error if already finished
@@ -351,7 +364,7 @@ rbpq_dbname(VALUE self)
 /* ---------- DBI::DBD::Pq::Statement ------------------------------------- */
 
 static void
-rbst_s_free(struct rbst_struct *st)
+AltPg_St_s_free(struct AltPg_St *st)
 {
 	if (NULL == st) return;
 	if (st->res) PQclear(st->res);
@@ -361,23 +374,23 @@ rbst_s_free(struct rbst_struct *st)
 }
 
 static VALUE
-rbst_s_alloc(VALUE klass)
+AltPg_St_s_alloc(VALUE klass)
 {
-	struct rbst_struct *st = ALLOC(struct rbst_struct);
-	memset((void *)st, '\0', sizeof(struct rbst_struct));
-	return Data_Wrap_Struct(klass, 0, rbst_s_free, st);
+	struct AltPg_St *st = ALLOC(struct AltPg_St);
+	memset((void *)st, '\0', sizeof(struct AltPg_St));
+	return Data_Wrap_Struct(klass, 0, AltPg_St_s_free, st);
 }
 
 /* FIXME:  paramTypes ? */
 static VALUE
-rbst_initialize(VALUE self, VALUE parent, VALUE query, VALUE nParams) /* PQprepare */
+AltPg_St_initialize(VALUE self, VALUE parent, VALUE query, VALUE nParams) /* PQprepare */
 {
-	struct rbpq_struct *pq;
-	struct rbst_struct *st;
+	struct AltPg_Db *pq;
+	struct AltPg_St *st;
 	PGresult *tmp_result;
 	VALUE plan;
 
-	if (!rb_obj_is_instance_of(parent, rbx_cPq)) {
+	if (!rb_obj_is_instance_of(parent, rbx_cDb)) {
 		rb_raise(rb_eTypeError,
 		         "Expected argument of type DBI::DBD::AltPg::Database");
 	}
@@ -413,9 +426,9 @@ rbst_initialize(VALUE self, VALUE parent, VALUE query, VALUE nParams) /* PQprepa
 }
 
 static VALUE
-rbst_bind_param(VALUE self, VALUE index, VALUE val, VALUE ignored)
+AltPg_St_bind_param(VALUE self, VALUE index, VALUE val, VALUE ignored)
 {
-	struct rbst_struct *st;
+	struct AltPg_St *st;
 
 	GetStmt(self, st);
 
@@ -436,27 +449,27 @@ rbst_bind_param(VALUE self, VALUE index, VALUE val, VALUE ignored)
 }
 
 static VALUE
-rbst_cancel(VALUE self)
+AltPg_St_cancel(VALUE self)
 {
-	struct rbst_struct *st;
+	struct AltPg_St *st;
 
 	GetStmt(self, st);
-	dbd_st_cancel(st);
+	altpg_st_cancel(st);
 	rb_ary_clear(rb_iv_get(self, "@params"));
 
 	return Qnil;
 }
 
 static VALUE
-rbst_execute(VALUE self)
+AltPg_St_execute(VALUE self)
 {
-	struct rbst_struct *st;
+	struct AltPg_St *st;
 	VALUE iv_params;
 	int i;
 
 	GetStmt(self, st);
 
-	dbd_st_cancel(st);
+	altpg_st_cancel(st);
 
 	iv_params = rb_iv_get(self, "@params");
 
@@ -488,13 +501,13 @@ rbst_execute(VALUE self)
 }
 
 static VALUE
-rbst_finish(VALUE self)
+AltPg_St_finish(VALUE self)
 {
-	struct rbst_struct *st;
+	struct AltPg_St *st;
 
 	GetStmt(self, st);
 
-	dbd_st_cancel(st);
+	altpg_st_cancel(st);
 
 	if (st->conn) {
 		VALUE plan = rb_iv_get(self, "@plan");
@@ -512,9 +525,9 @@ rbst_finish(VALUE self)
 }
 
 static VALUE
-rbst_fetch(VALUE self)
+AltPg_St_fetch(VALUE self)
 {
-	struct rbst_struct *st;
+	struct AltPg_St *st;
 	VALUE ret;
 	/* XXX - store @row rather than making anew each time? */
 	int i;
@@ -540,9 +553,9 @@ rbst_fetch(VALUE self)
 }
 
 static VALUE
-rbst_rows(VALUE self)
+AltPg_St_rows(VALUE self)
 {
-	struct rbst_struct *st;
+	struct AltPg_St *st;
 
 	GetStmt(self, st);
 	return convert_PQcmdTuples(st->res);
@@ -559,9 +572,9 @@ rbst_rows(VALUE self)
  *
  */
 static VALUE
-rbst_column_info(VALUE self)
+AltPg_St_column_info(VALUE self)
 {
-	struct rbst_struct *st;
+	struct AltPg_St *st;
 
 	// XXX - @column_info ||= (...).freeze
 	// XXX - module-level strings for keys?
@@ -616,18 +629,18 @@ rbst_column_info(VALUE self)
 }
 
 static VALUE
-rbst_result_format(VALUE self)
+AltPg_St_result_format(VALUE self)
 {
-	struct rbst_struct *st;
+	struct AltPg_St *st;
 	GetStmt(self, st);
 	return INT2FIX(st->resultFormat);
 }
 
 
 static VALUE
-rbst_result_format_set(VALUE self, VALUE fmtcode)
+AltPg_St_result_format_set(VALUE self, VALUE fmtcode)
 {
-	struct rbst_struct *st;
+	struct AltPg_St *st;
 
 	GetStmt(self, st);
 
@@ -640,30 +653,29 @@ void
 Init_pq()
 {
 	rbx_mAltPg = rb_path2class("DBI::DBD::AltPg");
-//rbx_cPq    = rb_define_class_under(rbx_mAltPg, "Pq", rb_cObject);
-	rbx_cPq    = rb_define_class_under(rbx_mAltPg, "Database", rb_path2class("DBI::BaseDatabase"));
+	rbx_cDb    = rb_define_class_under(rbx_mAltPg, "Database", rb_path2class("DBI::BaseDatabase"));
 	rbx_cSt    = rb_define_class_under(rbx_mAltPg, "Statement",
 	                                   rb_path2class("DBI::BaseStatement"));
 
-	rb_define_alloc_func(rbx_cPq, rbpq_s_alloc);
-	rb_define_method(rbx_cPq, "connectdb", rbpq_connectdb, 1); /* PQconnectdb */
-	rb_define_method(rbx_cPq, "database_name", rbpq_dbname, 0); /* PQdb */
-	rb_define_method(rbx_cPq, "disconnect", rbpq_disconnect, 0); /* PQfinish */
-	rb_define_method(rbx_cPq, "commit", rbpq_commit, 0);
-	rb_define_method(rbx_cPq, "rollback", rbpq_rollback, 0);
-	rb_define_method(rbx_cPq, "do", rbpq_do, 1); /* PQdb */
+	rb_define_alloc_func(rbx_cDb, AltPg_Db_s_alloc);
+	rb_define_method(rbx_cDb, "connectdb", AltPg_Db_connectdb, 1);
+	rb_define_method(rbx_cDb, "database_name", AltPg_Db_dbname, 0);
+	rb_define_method(rbx_cDb, "disconnect", AltPg_Db_disconnect, 0);
+	rb_define_method(rbx_cDb, "commit", AltPg_Db_commit, 0);
+	rb_define_method(rbx_cDb, "rollback", AltPg_Db_rollback, 0);
+	rb_define_method(rbx_cDb, "do", AltPg_Db_do, 1);
 
-	rb_define_alloc_func(rbx_cSt, rbst_s_alloc);
-	rb_define_method(rbx_cSt, "initialize", rbst_initialize, 3);
-	rb_define_method(rbx_cSt, "bind_param", rbst_bind_param, 3);
-	rb_define_method(rbx_cSt, "cancel", rbst_cancel, 0);
-	rb_define_method(rbx_cSt, "finish", rbst_finish, 0);
-	rb_define_method(rbx_cSt, "execute", rbst_execute, 0);
-	rb_define_method(rbx_cSt, "fetch", rbst_fetch, 0);
-	rb_define_method(rbx_cSt, "rows", rbst_rows, 0);
-	rb_define_method(rbx_cSt, "column_info", rbst_column_info, 0);
-	rb_define_method(rbx_cSt, "result_format",  rbst_result_format, 0);
-	rb_define_method(rbx_cSt, "result_format=", rbst_result_format_set, 1);
+	rb_define_alloc_func(rbx_cSt, AltPg_St_s_alloc);
+	rb_define_method(rbx_cSt, "initialize", AltPg_St_initialize, 3);
+	rb_define_method(rbx_cSt, "bind_param", AltPg_St_bind_param, 3);
+	rb_define_method(rbx_cSt, "cancel", AltPg_St_cancel, 0);
+	rb_define_method(rbx_cSt, "finish", AltPg_St_finish, 0);
+	rb_define_method(rbx_cSt, "execute", AltPg_St_execute, 0);
+	rb_define_method(rbx_cSt, "fetch", AltPg_St_fetch, 0);
+	rb_define_method(rbx_cSt, "rows", AltPg_St_rows, 0);
+	rb_define_method(rbx_cSt, "column_info", AltPg_St_column_info, 0);
+	rb_define_method(rbx_cSt, "result_format",  AltPg_St_result_format, 0);
+	rb_define_method(rbx_cSt, "result_format=", AltPg_St_result_format_set, 1);
 
 	id_to_s      = rb_intern("to_s");
 	id_to_i      = rb_intern("to_i");
