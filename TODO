@@ -14,7 +14,9 @@ TODO:
  - array support
 
 DONE:
- - parameterized query support
+ - dbd_db.do() parameterization
+
+ - StatementHandle parameterized query support
 
  - dbd_db.do() direct (unprepared) execution implementation
 
