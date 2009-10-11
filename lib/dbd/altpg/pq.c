@@ -32,8 +32,15 @@ static ID id_to_s;
 static ID id_to_i;
 static ID id_new;
 static ID id_inspect;
+static ID id_translate_parameters;
 static VALUE sym_type_name;
 static VALUE sym_dbi_type;
+
+struct altpg_params {
+	int nparams;
+	char **param_values;
+	int *param_lengths;
+};
 
 struct AltPg_Db {
 	PGconn *conn;
@@ -43,9 +50,7 @@ struct AltPg_Db {
 struct AltPg_St {
 	PGconn *conn;              /* NULL if finished                       */
 	PGresult *res;             /* non-NULL if executed and not cancelled */
-	int nparams;
-	char **param_values;
-	int *param_lengths;
+	struct altpg_params params;
 	unsigned int nfields;
 	unsigned int ntuples;
 	unsigned int row_number;
@@ -65,6 +70,49 @@ new_dbi_database_error(const char *msg,
 	                  msg ? rb_str_new2(msg) : Qnil,
 	                  err,
 	                  sqlstate ? rb_str_new2(sqlstate) : Qnil);
+}
+
+static void
+altpg_params_initialize(struct altpg_params *ap, int nparams)
+{
+	ap->nparams = nparams;
+	ap->param_values = ALLOC_N(char *, nparams);
+	MEMZERO(ap->param_values, char *, nparams);
+	ap->param_lengths = ALLOC_N(int, nparams);
+	MEMZERO(ap->param_lengths, int, nparams);
+}
+
+/* Map an array of strings (or nils) to a struct altpg_params,
+ * allocating the struct if necessary.
+ *
+ * CAUTION:  no ruby type checking!
+ */
+static struct altpg_params *
+altpg_params_from_ary(struct altpg_params *ap, VALUE ary)
+{
+  int i;
+
+  for (i = 0; i < ap->nparams; ++i) {
+    VALUE elt = rb_ary_entry(ary, i);
+    if (Qnil == elt) {
+      ap->param_values[i]  = NULL;
+      ap->param_lengths[i] = 0;
+    } else {
+      ap->param_values[i]  = RSTRING_PTR(elt);
+      ap->param_lengths[i] = RSTRING_LEN(elt);
+    }
+  }
+
+  return ap;
+}
+
+static void
+altpg_params_clear(struct altpg_params *ap)
+{
+	if (NULL == ap) return;
+	if (ap->param_values) xfree(ap->param_values);
+	if (ap->param_lengths) xfree(ap->param_lengths);
+	ap->nparams = 0;
 }
 
 static VALUE
@@ -151,17 +199,30 @@ raise_PQsend_error(PGconn *conn)
 
 /* Unprepared query execution.  (internal) */
 static void
-altpg_db_direct_exec(struct AltPg_Db *db, VALUE *out, const char *query)
+altpg_db_direct_exec(struct AltPg_Db *db, VALUE *out, const char *query, VALUE ary)
 {
+	struct altpg_params params = { 0, NULL, NULL };
+	int send_ok;
 	PGresult *res;
 
-	if (! PQsendQuery(db->conn, query)) {
-		raise_PQsend_error(db->conn);
+	if (ary != Qnil && RARRAY_LEN(ary) > 0) {
+		altpg_params_initialize(&params, RARRAY_LEN(ary));
+		altpg_params_from_ary(&params, ary);
 	}
+	send_ok = PQsendQueryParams(db->conn,
+	                            query,
+	                            params.nparams,
+															NULL,
+	                            params.param_values,
+															params.param_lengths,
+															NULL,
+															0);
+	altpg_params_clear(&params);
+
+	if (!send_ok) raise_PQsend_error(db->conn);
+
 	res = async_PQgetResult(db->conn);
-	if (out) {
-		*out = convert_PQcmdTuples(res);
-	}
+	if (out) *out = convert_PQcmdTuples(res);
 
 	PQclear(res);
 }
@@ -183,16 +244,16 @@ static void
 altpg_st_cancel(struct AltPg_St *st)
 {
 	if (st->res) {
-		PQclear(st->res);        /* Undo any execute()   */
+		PQclear(st->res);            /* Undo any execute()   */
 		st->res = NULL;
 		st->ntuples = 0;
 
-		st->row_number = 0;      /* Erase any #fetch     */
+		st->row_number = 0;          /* Erase any #fetch     */
 	}
 
-	if (st->nparams) {         /* Undo any #bind_param */
-		MEMZERO(st->param_values, char *, st->nparams);
-		MEMZERO(st->param_lengths, int, st->nparams);
+	if (st->params.nparams > 0) {  /* Undo any #bind_param */
+		MEMZERO(st->params.param_values, char *, st->params.nparams);
+		MEMZERO(st->params.param_lengths, int, st->params.nparams);
 	}
 }
 
@@ -318,15 +379,20 @@ AltPg_Db_disconnect(VALUE self)
 }
 
 static VALUE
-AltPg_Db_do(VALUE self, VALUE query)
+AltPg_Db_do(int argc, VALUE *argv, VALUE self)
 {
 	struct AltPg_Db *db;
-	VALUE rows;
+	VALUE query, params, xlated, rowcount;
+
+	rb_scan_args(argc, argv, "1*", &query, &params);
+
+	SafeStringValue(query);
+	xlated = rb_funcall(rbx_mAltPg, id_translate_parameters, 1, query);
 
 	Data_Get_Struct(self, struct AltPg_Db, db);
-	altpg_db_direct_exec(db, &rows, STR2CSTR(query));
+	altpg_db_direct_exec(db, &rowcount, RSTRING_PTR(rb_ary_entry(xlated, 0)), params);
 
-	return rows;
+	return rowcount;
 }
 
 static VALUE
@@ -335,7 +401,7 @@ AltPg_Db_commit(VALUE self)
 	struct AltPg_Db *db;
 
 	Data_Get_Struct(self, struct AltPg_Db, db);
-	altpg_db_direct_exec(db, NULL, "COMMIT");
+	altpg_db_direct_exec(db, NULL, "COMMIT", Qnil);
 
 	return Qnil;
 }
@@ -346,7 +412,7 @@ AltPg_Db_rollback(VALUE self)
 	struct AltPg_Db *db;
 
 	Data_Get_Struct(self, struct AltPg_Db, db);
-	altpg_db_direct_exec(db, NULL, "ROLLBACK");
+	altpg_db_direct_exec(db, NULL, "ROLLBACK", Qnil);
 
 	return Qnil;
 }
@@ -373,8 +439,7 @@ AltPg_St_s_free(struct AltPg_St *st)
 {
 	if (NULL == st) return;
 	if (st->res) PQclear(st->res);
-	if (st->param_lengths) xfree(st->param_lengths);
-	if (st->param_values) xfree(st->param_values);
+	altpg_params_clear(&st->params);
 	xfree(st);
 }
 
@@ -382,48 +447,53 @@ static VALUE
 AltPg_St_s_alloc(VALUE klass)
 {
 	struct AltPg_St *st = ALLOC(struct AltPg_St);
-	memset((void *)st, '\0', sizeof(struct AltPg_St));
+	MEMZERO(st, struct AltPg_St, 1);
 	return Data_Wrap_Struct(klass, 0, AltPg_St_s_free, st);
 }
 
 /* FIXME:  paramTypes ? */
 static VALUE
-AltPg_St_initialize(VALUE self, VALUE parent, VALUE query, VALUE nParams) /* PQprepare */
+AltPg_St_initialize(VALUE self, VALUE parent, VALUE query)
 {
 	struct AltPg_Db *db;
 	struct AltPg_St *st;
 	PGresult *tmp_result;
-	VALUE plan;
+	int nparams;
+	VALUE plan, xlated;
+
+	Data_Get_Struct(self, struct AltPg_St, st); /* later, our own data_get */
 
 	if (!rb_obj_is_instance_of(parent, rbx_cDb)) {
 		rb_raise(rb_eTypeError,
 		         "Expected argument of type DBI::DBD::AltPg::Database");
 	}
-
-	Data_Get_Struct(self, struct AltPg_St, st); /* later, our own data_get */
 	Data_Get_Struct(parent, struct AltPg_Db, db);
-	Check_SafeStr(query);
-
 	if (!db || !db->conn) {
 		rb_raise(rb_path2class("DBI::InternalError"),
 		         "Attempt to create AltPg::Statement from invalid AltPg::Database (db %p, db->conn %p)", db, db ? db->conn : NULL);
 	}
 	st->conn = db->conn;
-	st->nparams = FIX2INT(nParams);
-	if (st->nparams < 0) {
-		rb_raise(rb_eTypeError, "Number of parameters must be >= 0");
+
+	SafeStringValue(query);
+	xlated = rb_funcall(rbx_mAltPg, id_translate_parameters, 1, query);
+
+	nparams = FIX2INT(rb_ary_entry(xlated, 1));
+	if (nparams < 0) {
+		rb_raise(rb_path2class("DBI::InternalError"),
+		         "Parameter translation counted < 0 placeholders!");
 	}
-	st->param_values = ALLOC_N(char *, st->nparams);
-	MEMZERO(st->param_values, char *, st->nparams);
-	st->param_lengths = ALLOC_N(int, st->nparams);
-	MEMZERO(st->param_lengths, int, st->nparams);
+	altpg_params_initialize(&st->params, nparams);
 
 	rb_iv_set(self, "@type_map", rb_iv_get(parent, "@type_map")); // ??? store @parent instead?
 	plan = rb_str_new2("ruby-dbi:altpg:");
 	rb_str_append(plan, rb_funcall(ULONG2NUM(db->serial++), id_to_s, 0));
 	rb_iv_set(self, "@plan", plan);
 
-	if (!PQsendPrepare(st->conn, RSTRING_PTR(plan), RSTRING_PTR(query), 0, NULL)) {
+	if (!PQsendPrepare(st->conn,
+	    RSTRING_PTR(plan),
+	    RSTRING_PTR(rb_ary_entry(xlated, 0)),
+	    0,
+	    NULL)) {
 		raise_PQsend_error(st->conn);
 	}
 	tmp_result = async_PQgetResult(st->conn);
@@ -474,37 +544,26 @@ AltPg_St_execute(VALUE self)
 {
 	struct AltPg_St *st;
 	VALUE iv_params;
-	int i, send_ok;
+	int send_ok;
 
 	st = altpg_st_get_unfinished(self);
 	altpg_st_cancel(st);
-
 	iv_params = rb_iv_get(self, "@params");
 
-	for (i = 0; i < st->nparams; ++i) {
-		VALUE elt = rb_ary_entry(iv_params, i);
-		//printf("@params[%d] => %s\n", i, STR2CSTR(elt));
-		if (Qnil == elt) {
-			st->param_values[i] = NULL;
-			st->param_lengths[i] = 0;
-		} else {
-			st->param_values[i] = STR2CSTR(elt);
-			st->param_lengths[i] = RSTRING_LEN(elt);
-		}
-	}
-
+	altpg_params_from_ary(&st->params, iv_params);
 	send_ok = PQsendQueryPrepared(st->conn,
-	                              STR2CSTR(rb_iv_get(self, "@plan")),
-	                              st->nparams,
-	                              st->param_values,
-	                              st->param_lengths,
+	                              RSTRING_PTR(rb_iv_get(self, "@plan")),
+	                              st->params.nparams,
+	                              st->params.param_values,
+	                              st->params.param_lengths,
 	                              NULL,
 	                              0);   /* text format */
+	if (st->params.nparams > 0) rb_ary_clear(iv_params);
+
 	if (!send_ok) {
 			raise_PQsend_error(st->conn);
 	}
 	st->res = async_PQgetResult(st->conn);
-	if (st->nparams) rb_ary_clear(iv_params);
 	st->nfields = PQnfields(st->res);
 	st->ntuples = PQntuples(st->res);
 
@@ -676,10 +735,10 @@ Init_pq()
 	rb_define_method(rbx_cDb, "disconnect", AltPg_Db_disconnect, 0);
 	rb_define_method(rbx_cDb, "commit", AltPg_Db_commit, 0);
 	rb_define_method(rbx_cDb, "rollback", AltPg_Db_rollback, 0);
-	rb_define_method(rbx_cDb, "do", AltPg_Db_do, 1);
+	rb_define_method(rbx_cDb, "do", AltPg_Db_do, -1);
 
 	rb_define_alloc_func(rbx_cSt, AltPg_St_s_alloc);
-	rb_define_method(rbx_cSt, "initialize", AltPg_St_initialize, 3);
+	rb_define_method(rbx_cSt, "initialize", AltPg_St_initialize, 2);
 	rb_define_method(rbx_cSt, "bind_param", AltPg_St_bind_param, 3);
 	rb_define_method(rbx_cSt, "cancel", AltPg_St_cancel, 0);
 	rb_define_method(rbx_cSt, "finish", AltPg_St_finish, 0);
@@ -690,10 +749,11 @@ Init_pq()
 	rb_define_method(rbx_cSt, "result_format",  AltPg_St_result_format, 0);
 	rb_define_method(rbx_cSt, "result_format=", AltPg_St_result_format_set, 1);
 
-	id_to_s       = rb_intern("to_s");
-	id_to_i       = rb_intern("to_i");
-	id_new        = rb_intern("new");
-	id_inspect    = rb_intern("inspect");
+	id_to_s                 = rb_intern("to_s");
+	id_to_i                 = rb_intern("to_i");
+	id_new                  = rb_intern("new");
+	id_inspect              = rb_intern("inspect");
+	id_translate_parameters = rb_intern("translate_parameters");
 	sym_type_name = ID2SYM(rb_intern("type_name"));
 	sym_dbi_type  = ID2SYM(rb_intern("dbi_type"));
 }
