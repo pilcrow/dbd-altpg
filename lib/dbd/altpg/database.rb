@@ -153,12 +153,7 @@ eosql
   end
 
   def prepare(query)
-    ps = DBI::SQL::PreparedStatement.new(nil, query)
-    nparams = ps.unbound.size
-    if nparams > 0
-      query = ps.bind( (1..nparams).map {|i| "$#{i}"} )
-    end
-    DBI::DBD::AltPg::Statement.new(self, query, nparams)
+    DBI::DBD::AltPg::Statement.new(self, query)
   end
 
   private
