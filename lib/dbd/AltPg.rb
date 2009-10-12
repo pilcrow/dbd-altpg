@@ -6,19 +6,51 @@ module DBD
   module AltPg
     VERSION = 'pre-20091001'
     DESCRIPTION = 'PostgreSQL DBI DBD'
- 
+
     # see DBI::TypeUtil#convert
     def self.driver_name
       "AltPg"
     end
 
-    def self.translate_parameters(query) # :nodoc:
-      ps = DBI::SQL::PreparedStatement.new(nil, query)
-      nparams = ps.unbound.size
-      if nparams > 0
-        query = ps.bind( (1..nparams).map {|i| "$#{i}"} )
+    Pg_Regex_ParseParams = %r{         # We look for:
+          ["'?]                        # 1. ? params, "identifiers" or
+                                       #    'literals' (incl. E'', B''
+                                       #    and X'').
+      |    --                          # 2. -- SQL comments to end-of-line
+      |    /\*                         # 3. /* C-style comments */
+      |   \$                           # 4. $Dollar-Quoted-Delimiter$
+           ([[:alpha:]_][[:alnum:]]*)?
+          \$
+    }x     # :nodoc:
+
+    def self.translate_parameters(sql)        # :nodoc:
+      sql = sql.dup
+      param = 1
+      i = 0
+
+      while i = sql.index(Pg_Regex_ParseParams, i)
+        case $~[0]
+        when "'", '"'
+          # "identifier" or 'literal', advance past closing quote
+          i = sql.index($~[0], i + 1) + 1 rescue sql.length
+        when "--"
+          # SQL-style comment, advance past end-of-line
+          i = sql.index(?\n, i+2) + 1 rescue sql.length
+        when "/*"
+          # C-style comment, advance past close of comment
+          i = sql.index("*/", i+2) + 1 rescue sql.length
+        when "?"
+          # Parameter, substitute $1-style placeholder
+          sql[i] = placeholder = "$#{param}"
+          i += placeholder.length
+          param += 1
+        else
+          # $$ delimiter, advance past closing delimiter
+          i = sql.index($~[0], i + $~[0].length) + 1 rescue sql.length
+        end
       end
-      return [query, nparams]
+
+      sql
     end
 
   end # -- module AltPg
