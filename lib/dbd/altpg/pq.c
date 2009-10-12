@@ -111,7 +111,9 @@ altpg_params_clear(struct altpg_params *ap)
 {
 	if (NULL == ap) return;
 	if (ap->param_values) xfree(ap->param_values);
+	ap->param_values = NULL;
 	if (ap->param_lengths) xfree(ap->param_lengths);
+	ap->param_lengths = NULL;
 	ap->nparams = 0;
 }
 
@@ -382,15 +384,15 @@ static VALUE
 AltPg_Db_do(int argc, VALUE *argv, VALUE self)
 {
 	struct AltPg_Db *db;
-	VALUE query, params, xlated, rowcount;
+	VALUE query, params, rowcount;
 
 	rb_scan_args(argc, argv, "1*", &query, &params);
 
 	SafeStringValue(query);
-	xlated = rb_funcall(rbx_mAltPg, id_translate_parameters, 1, query);
+	query = rb_funcall(rbx_mAltPg, id_translate_parameters, 1, query);
 
 	Data_Get_Struct(self, struct AltPg_Db, db);
-	altpg_db_direct_exec(db, &rowcount, RSTRING_PTR(rb_ary_entry(xlated, 0)), params);
+	altpg_db_direct_exec(db, &rowcount, RSTRING_PTR(query), params);
 
 	return rowcount;
 }
@@ -458,8 +460,7 @@ AltPg_St_initialize(VALUE self, VALUE parent, VALUE query)
 	struct AltPg_Db *db;
 	struct AltPg_St *st;
 	PGresult *tmp_result;
-	int nparams;
-	VALUE plan, xlated;
+	VALUE plan;
 
 	Data_Get_Struct(self, struct AltPg_St, st); /* later, our own data_get */
 
@@ -475,14 +476,7 @@ AltPg_St_initialize(VALUE self, VALUE parent, VALUE query)
 	st->conn = db->conn;
 
 	SafeStringValue(query);
-	xlated = rb_funcall(rbx_mAltPg, id_translate_parameters, 1, query);
-
-	nparams = FIX2INT(rb_ary_entry(xlated, 1));
-	if (nparams < 0) {
-		rb_raise(rb_path2class("DBI::InternalError"),
-		         "Parameter translation counted < 0 placeholders!");
-	}
-	altpg_params_initialize(&st->params, nparams);
+	query = rb_funcall(rbx_mAltPg, id_translate_parameters, 1, query);
 
 	rb_iv_set(self, "@type_map", rb_iv_get(parent, "@type_map")); // ??? store @parent instead?
 	plan = rb_str_new2("ruby-dbi:altpg:");
@@ -491,7 +485,7 @@ AltPg_St_initialize(VALUE self, VALUE parent, VALUE query)
 
 	if (!PQsendPrepare(st->conn,
 	    RSTRING_PTR(plan),
-	    RSTRING_PTR(rb_ary_entry(xlated, 0)),
+	    RSTRING_PTR(query),
 	    0,
 	    NULL)) {
 		raise_PQsend_error(st->conn);
@@ -550,6 +544,10 @@ AltPg_St_execute(VALUE self)
 	altpg_st_cancel(st);
 	iv_params = rb_iv_get(self, "@params");
 
+	if (RARRAY_LEN(iv_params) != st->params.nparams) {
+		altpg_params_clear(&st->params);
+		altpg_params_initialize(&st->params, RARRAY_LEN(iv_params));
+	}
 	altpg_params_from_ary(&st->params, iv_params);
 	send_ok = PQsendQueryPrepared(st->conn,
 	                              RSTRING_PTR(rb_iv_get(self, "@plan")),
