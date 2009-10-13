@@ -229,6 +229,39 @@ altpg_db_direct_exec(struct AltPg_Db *db, VALUE *out, const char *query, VALUE a
 	PQclear(res);
 }
 
+static int
+altpg_db_in_transaction(struct AltPg_Db *db)
+{
+	int in_trans = 0;
+	switch (PQtransactionStatus(db->conn)) {
+	case PQTRANS_INTRANS:
+	case PQTRANS_INERROR:
+		in_trans = 1;
+		break;
+	case PQTRANS_IDLE:
+		in_trans = 0;
+		break;
+	case PQTRANS_ACTIVE:
+		/* Should Not Occur. (tm)
+		 * We were called between a PQsend* and (async) PQgetResult, which
+		 * is contrary to our design assumptions.
+		 */
+		rb_raise(rb_path2class("DBI::InternalError"),
+		         "PQTRANS_ACTIVE unexpectedly encountered");
+		break; /* Not reached */
+	case PQTRANS_UNKNOWN:
+		/* XXX force SQLSTATE to 08000 ? */
+		rb_raise(rb_path2class("DBI::DatabaseError"),
+		         "Bad connection");
+		break; /* Not reached */
+	default:
+		rb_raise(rb_path2class("DBI::InternalError"),
+		         "Fell through PQtransactionStatus code switch!");
+	}
+
+	return in_trans;
+}
+
 static struct AltPg_St *
 altpg_st_get_unfinished(VALUE self)
 {
@@ -281,7 +314,7 @@ AltPg_Db_s_alloc(VALUE klass)
 /* ==== Instance methods ================================================== */
 
 static VALUE
-AltPg_Db_connectdb(VALUE self, VALUE conninfo)
+AltPg_Db_pq_connect_db(VALUE self, VALUE conninfo)
 {
 	struct AltPg_Db *db;
 	int fd, r;
@@ -297,7 +330,7 @@ AltPg_Db_connectdb(VALUE self, VALUE conninfo)
 	} else if (PQstatus(db->conn) == CONNECTION_BAD) {
 		goto ConnError;
 	}
-	
+
 	fd = PQsocket(db->conn);
 
 	for (pollstat = PGRES_POLLING_WRITING;
@@ -397,24 +430,44 @@ AltPg_Db_do(int argc, VALUE *argv, VALUE self)
 	return rowcount;
 }
 
+/* call-seq:
+ *   dbh.rollback -> nil
+ *
+ * If AutoCommit is false, this method commits the current transaction and
+ * implicitly begins a new one.  If AutoCommit is true, this method does
+ * nothing.
+ */
 static VALUE
 AltPg_Db_commit(VALUE self)
 {
 	struct AltPg_Db *db;
 
 	Data_Get_Struct(self, struct AltPg_Db, db);
-	altpg_db_direct_exec(db, NULL, "COMMIT", Qnil);
+	if (altpg_db_in_transaction(db)) { /* Implies self['AutoCommit'] := false */
+		altpg_db_direct_exec(db, NULL, "COMMIT", Qnil);
+		altpg_db_direct_exec(db, NULL, "BEGIN", Qnil);
+	}
 
 	return Qnil;
 }
 
+/* call-seq:
+ *   dbh.rollback -> nil
+ *
+ * If AutoCommit is false, this method rolls back the current transaction and
+ * implicitly begins a new one.  If AutoCommit is true, this method does
+ * nothing.
+ */
 static VALUE
 AltPg_Db_rollback(VALUE self)
 {
 	struct AltPg_Db *db;
 
 	Data_Get_Struct(self, struct AltPg_Db, db);
-	altpg_db_direct_exec(db, NULL, "ROLLBACK", Qnil);
+	if (altpg_db_in_transaction(db)) { /* Implies self['AutoCommit'] := false */
+		altpg_db_direct_exec(db, NULL, "ROLLBACK", Qnil);
+		altpg_db_direct_exec(db, NULL, "BEGIN", Qnil);
+	}
 
 	return Qnil;
 }
@@ -432,6 +485,15 @@ AltPg_Db_dbname(VALUE self)
 	OBJ_TAINT(ret);
 
 	return ret;
+}
+
+static VALUE
+AltPg_Db_in_transaction_p(VALUE self)
+{
+	struct AltPg_Db *db;
+
+	Data_Get_Struct(self, struct AltPg_Db, db);
+	return altpg_db_in_transaction(db) ? Qtrue : Qfalse;
 }
 
 /* ---------- DBI::DBD::Pq::Statement ------------------------------------- */
@@ -728,7 +790,8 @@ Init_pq()
 	                                   rb_path2class("DBI::BaseStatement"));
 
 	rb_define_alloc_func(rbx_cDb, AltPg_Db_s_alloc);
-	rb_define_method(rbx_cDb, "connectdb", AltPg_Db_connectdb, 1);
+	rb_define_method(rbx_cDb, "pq_connect_db", AltPg_Db_pq_connect_db, 1);
+	rb_define_method(rbx_cDb, "in_transaction?", AltPg_Db_in_transaction_p, 0);
 	rb_define_method(rbx_cDb, "database_name", AltPg_Db_dbname, 0);
 	rb_define_method(rbx_cDb, "disconnect", AltPg_Db_disconnect, 0);
 	rb_define_method(rbx_cDb, "commit", AltPg_Db_commit, 0);
