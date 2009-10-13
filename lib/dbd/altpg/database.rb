@@ -5,29 +5,34 @@ class DBI::DBD::AltPg::Database < DBI::BaseDatabase
  #  super(pg_conn, {}) # FIXME - attributes
   def initialize(conninfo, dbd_driver)
     @parent = dbd_driver
-    @type_map = {}
+    @attr = {}
 
-    self.connectdb(conninfo)
+    pq_connect_db(conninfo)
 
     @type_map = generate_type_map
-    # initialize type map (adapted from dbd-pg-0.4.3).
-    # Initial query results are "text" encoded, e.g.:
-    #  "16", "bool"
-    #  "17", "bytea"
-    #
-    # FIXME: handle array (_typname) types
-    #
-    #map = {}
-    #st = DBI::DBD::AltPg::Statement.new(self, <<'eosql', 0)
-#SELECT oid, typname FROM pg_type
-#WHERE typtype IN ('b', 'e') and typname NOT LIKE E'\\_%'
-#eosql
-    #st.execute
-    #while r = st.fetch
-    #  map[r[0].to_i] = r[1]
-    #end
-    #st.finish
-    #@type_map = map
+  end
+
+  def [](key)
+    case key
+    when 'altpg_client_encoding'
+      __show_variable('client_encoding')
+    else
+      @attr[key]
+    end
+  end
+
+  def []=(key, value)
+    case key
+    when 'AutoCommit'
+      if value
+        self.do('COMMIT') if in_transaction?    # N.B.: *not* self.commit()
+      else
+        self.do('BEGIN') unless in_transaction?
+      end
+    when 'altpg_client_encoding'
+      __set_variable('client_encoding', value)
+    end
+    @attr[key] = value
   end
 
   def disconnect
@@ -149,11 +154,29 @@ eosql
         h['dbi_type'] = @type_map[ h['type_name'] ]
         h
       end
-    end # -- prepare
+    end # -- prepare do |sth|
   end
 
   def prepare(query)
     DBI::DBD::AltPg::Statement.new(self, query)
+  end
+
+  def __set_variable(var, value, is_local = false)
+    make_dbh.do('SELECT pg_catalog.set_config(?, ?, ?)', var, value, !!is_local)
+  rescue ::DBI::DatabaseError => e
+    if e.state =~ /^42/ or e.state == "22023" # invalid_parameter_value
+      e = ::DBI::ProgrammingError.new(e.message, e.err, e.state)
+    end
+    raise e
+  end
+
+  def __show_variable(var)
+    make_dbh.select_one('SELECT pg_catalog.current_setting(?)', var)[0]
+  rescue ::DBI::DatabaseError => e
+    if e.state =~ /^42/
+      e = ::DBI::ProgrammingError.new(e.message, e.err, e.state)
+    end
+    raise e
   end
 
   private
