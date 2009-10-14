@@ -72,5 +72,6 @@ DBI::TypeUtil.register_conversion(DBI::DBD::AltPg.driver_name) do |obj|
 end
 
 require 'dbd/altpg/driver'
+require 'dbd/altpg/type'
 require 'dbd/altpg/database'
 require 'dbd/altpg/pq'
