@@ -60,16 +60,55 @@ struct AltPg_St {
 /* ==== Helper functions ================================================== */
 
 static VALUE
-new_dbi_database_error(const char *msg,
-                       VALUE err,
-                       const char *sqlstate)
+raise_dbi_internal_error(const char *msg)
 {
-	return rb_funcall(rb_path2class("DBI::DatabaseError"),
-	                  id_new,
-	                  3,
-	                  msg ? rb_str_new2(msg) : Qnil,
-	                  err,
-	                  sqlstate ? rb_str_new2(sqlstate) : Qnil);
+	VALUE err = rb_str_new2(msg);
+
+	rb_exc_raise(rb_class_new_instance(1, &err,
+	                                   rb_path2class("DBI::InternalError")));
+}
+
+static VALUE
+raise_dbi_database_error(const char *msg, const char *sqlstate)
+{
+	VALUE args[3];
+
+	args[0] = rb_str_new2(msg);       /* message */
+	args[1] = Qnil;                   /* err     */
+	args[2] = rb_str_new2(sqlstate);  /* state   */
+
+	rb_exc_raise(rb_class_new_instance(3, args,
+	                                   rb_path2class("DBI::DatabaseError")));
+}
+
+static void
+altpg_thread_select(int nfd, fd_set *rfds, fd_set *wfds)
+{
+	int r = rb_thread_select(nfd, rfds, wfds, NULL, NULL);
+	if (r > 0) return;
+
+	if (r < 0) raise_dbi_internal_error("Internal select() error");
+	raise_dbi_internal_error("Internal select() impossibly timed out");
+}
+
+static void
+fd_await_readable(fd)
+{
+	fd_set fds;
+
+	FD_ZERO(&fds);
+	FD_SET(fd, &fds);
+	altpg_thread_select(fd + 1, &fds, NULL);
+}
+
+static void
+fd_await_writeable(fd)
+{
+	fd_set fds;
+
+	FD_ZERO(&fds);
+	FD_SET(fd, &fds);
+	altpg_thread_select(fd + 1, NULL, &fds);
 }
 
 static void
@@ -133,30 +172,17 @@ convert_PQcmdTuples(PGresult *res)
 PGresult *
 async_PQgetResult(PGconn *conn)
 {
-	int fd, r;
-	fd_set rfds;
 	PGresult *tmp = NULL;
 	PGresult *res = NULL;
+	int fd;
 
 	fd = PQsocket(conn);
-
-	FD_ZERO(&rfds);
-	FD_SET(fd, &rfds);
-	r = rb_thread_select(fd + 1, &rfds, NULL, NULL, NULL);
+	fd_await_readable(fd);
 
 	/* ruby-pg-0.8.0 pgconn_block() */
 	PQconsumeInput(conn);
 	while (PQisBusy(conn)) {
-		FD_ZERO(&rfds);
-		FD_SET(fd, &rfds);
-		r = rb_thread_select(fd + 1, &rfds, NULL, NULL, NULL);
-		if (r > 0) {
-			PQconsumeInput(conn);
-			continue;
-		}
-		if (r < 0) rb_sys_fail("async_PQgetResult select failed");
-		rb_raise(rb_path2class("DBI::InternalError"),
-		         "async_PQgetResult select() indicated impossible timeout!");
+		fd_await_readable(fd);
 	}
 
 	/* ruby-pg-0.8.0 pgconn_get_last_result(), except we PQclear as needed */
@@ -177,17 +203,21 @@ async_PQgetResult(PGconn *conn)
 	case PGRES_FATAL_ERROR:
 	case PGRES_NONFATAL_ERROR:
 		{
-			VALUE e = new_dbi_database_error(
-			            PQresultErrorMessage(res),
-									Qnil,
-			            PQresultErrorField(res, PG_DIAG_SQLSTATE));
+			VALUE args[3];
+
+			args[0] = rb_str_new2(PQresultErrorMessage(res));
+			args[1] = Qnil;
+			args[2] = rb_str_new2(PQresultErrorField(res, PG_DIAG_SQLSTATE));
+
 			PQclear(res);
-			rb_exc_raise(e);
-			break; /* not reached */
+
+			rb_exc_raise(rb_class_new_instance(3,
+			                                   args,
+			                                   rb_path2class("DBI::DatabaseError")));
+			break; /* Not reached */
 		}
   default:
-	  rb_raise(rb_path2class("DBI::InternalError"),
-		         "Unknown/unexpected PQresultStatus");
+		raise_dbi_internal_error("Unknown/unexpected PQresultStatus");
 	}
 
 	return res;
@@ -313,90 +343,80 @@ AltPg_Db_s_alloc(VALUE klass)
 
 /* ==== Instance methods ================================================== */
 
-static VALUE
-AltPg_Db_pq_connect_db(VALUE self, VALUE conninfo)
+static void
+altpg_db_pq_connect_start(struct AltPg_Db *db, const char *conninfo)
 {
-	struct AltPg_Db *db;
-	int fd, r;
-	fd_set fds;
-	PostgresPollingStatusType pollstat;
+	if (db->conn)
+		raise_dbi_internal_error("Attempt to re-connect already-connected AltPg::Database object");
 
-	Check_SafeStr(conninfo);
-	Data_Get_Struct(self, struct AltPg_Db, db);
-
-	db->conn = PQconnectStart(RSTRING_PTR(conninfo));
+	db->conn = PQconnectStart(conninfo);
 	if (NULL == db->conn) {
-		rb_raise(rb_eNoMemError, "Unable to allocate libPQ structures");
+		raise_dbi_internal_error("PQconnectionStart: unable to allocate libPQ structures");
 	} else if (PQstatus(db->conn) == CONNECTION_BAD) {
-		goto ConnError;
+		raise_dbi_database_error("PQconnectionStart: connection failed", "08000");
 	}
+}
+
+static void
+altpg_db_pq_connect_poll(struct AltPg_Db *db)
+{
+	PostgresPollingStatusType pollstat;
+	int fd;
 
 	fd = PQsocket(db->conn);
 
-	for (pollstat = PGRES_POLLING_WRITING;
+	for (pollstat  = PGRES_POLLING_WRITING;
 	     pollstat != PGRES_POLLING_OK;
-			 pollstat = PQconnectPoll(db->conn)) {
-		FD_ZERO(&fds);
-		FD_SET(fd, &fds);
-
+			 pollstat  = PQconnectPoll(db->conn)) {
 		switch (pollstat) {
 		case PGRES_POLLING_OK:
 			break; /* all done */
 		case PGRES_POLLING_FAILED:
-			goto ConnError;
+			raise_dbi_database_error("PQconnectPoll: bad connection", "08000");
 			break; /* not reached */
 		case PGRES_POLLING_READING:
-			r = rb_thread_select(fd + 1, &fds, NULL, NULL, NULL);
-			if (r <= 0) goto SelectError;
+			fd_await_readable(fd);
 			break;
 		case PGRES_POLLING_WRITING:
-			r = rb_thread_select(fd + 1, NULL, &fds, NULL, NULL);
-			if (r <= 0) goto SelectError;
+			fd_await_writeable(fd);
 			break;
 		default:
-			rb_raise(rb_path2class("DBI::InternalError"),
-			         "Non-sensical PGRES_POLLING status encountered");
+			raise_dbi_internal_error("PQconnectPoll: non-sensical PGRES_POLLING status encountered");
 		}
 	}
+}
 
-	/*
-	{
-		int i, ntuples;
-		VALUE map = rb_hash_new();
-		PGresult *r = PQexecParams(db->conn, "SELECT oid, typname FROM pg_type", 0, NULL, NULL, NULL, NULL, 0);
-		maybe_raise_dbi_error(NULL, r);
+/* call-seq:
+ *   db.pq_connect_db(conninfo) -> db
+ *
+ * Connect to the PostgreSQL server specified by +conninfo+.
+ */
+static VALUE
+AltPg_Db_pq_connect_db(VALUE self, VALUE conninfo)
+{
+	/* We don't PQfinish() on error - object finalization will take
+	 * care of that. */
+	struct AltPg_Db *db;
 
-		ntuples = PQntuples(r);
-		for (i = 0; i < ntuples; ++i) {
-			VALUE oid;
-			VALUE typname;
+	Check_SafeStr(conninfo);
+	Data_Get_Struct(self, struct AltPg_Db, db);
 
-			oid = rb_str_new(PQgetvalue(r, i, 0), PQgetlength(r, i, 0));
-			oid = rb_funcall(oid, id_to_i, 0);
-			typname = rb_str_new(PQgetvalue(r, i, 1), PQgetlength(r, i, 1));
-			rb_hash_aset(map, oid, typname);
-		}
-		//rb_iv_set(self, "@type_map", map);
-		PQclear(r);
+  altpg_db_pq_connect_start(db, RSTRING_PTR(conninfo));
+	altpg_db_pq_connect_poll(db);
+
+	switch (PQprotocolVersion(db->conn)) {
+	case 3:
+		break;
+	case 2:
+		raise_dbi_database_error("DBD::AltPg requires protocol version >= 3",
+					                   "08P01");
+		break; /* Not reached */
+	default:
+		raise_dbi_internal_error("Unexpected protocol version");
+		break; /* Not reached */
 	}
-	*/
 
 	return self;
-
-ConnError:
-	{
-		VALUE e = new_dbi_database_error(PQerrorMessage(db->conn),
-		                                 Qnil,
-		                                 "08000");
-		PQfinish(db->conn);
-		rb_exc_raise(e);
-	}
-SelectError:
-	{
-		if (r < 0) rb_sys_fail("connectdb select() failed");
-		rb_raise(rb_path2class("DBI::InternalError"),
-		         "connectdb select() indicated impossible timeout!");
-	}
 }
 
 static VALUE
