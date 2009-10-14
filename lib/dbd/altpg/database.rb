@@ -204,6 +204,25 @@ eosql
     end
   end
 
+  def pg_type_to_binary(typname)
+    sym = case typname
+          when 'bool'                      then :Boolean
+          when 'int2'                      then :Int2
+          when 'int4'                      then :Int4
+          when 'int8'                      then :Int8
+          when 'varchar'                   then :Varchar
+            #FIXME#when 'float4','float8'           then DBI::Type::Float
+            #FIXME#when 'time', 'timetz'            then DBI::Type::Timestamp
+          when 'timestamp', 'timestamptz'  then :Timestamp
+          when 'date'                      then :Date
+            #FIXME#when 'decimal', 'numeric'        then DBI::Type::Decimal
+            #when 'bytea'                     then DBI::DBD::Pg::Type::ByteA
+          when 'enum'                      then :Varchar
+          else                                  :Varchar
+          end
+    return DBI::DBD::AltPg::Type::Binary.const_get(sym)
+  end
+
   def generate_type_map
     # {
     #   pg_oid => { :type_name => typname, :dbi_type => DBI::Type::Klass }
@@ -214,7 +233,11 @@ eosql
     # we (obviously) haven't loaded the typemappings needed for the higher
     # layer adapter to function.
     #
-    map = Hash.new({:type_name => 'unknown', :dbi_type => DBI::Type::Varchar})
+    map = Hash.new(
+            {:type_name         => 'unknown',
+             :text_conversion   => DBI::Type::Varchar,
+             :binary_conversion => DBI::DBD::AltPg::Type::Binary::Varchar}
+          )
     raw_sth = prepare(<<'eosql')
 SELECT
   t.oid,
@@ -229,8 +252,10 @@ eosql
     raw_sth.execute
     while r = raw_sth.fetch
       oid, typname = r
+      # XXX - when we go binary, we'll need to unpack
       map[oid.to_i] = { :type_name => typname,
-                        :dbi_type  => pg_type_to_dbi(typname) }
+                        :text_conversion   => pg_type_to_dbi(typname),
+                        :binary_conversion => pg_type_to_binary(typname) }
     end
     map
   ensure
