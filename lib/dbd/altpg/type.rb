@@ -65,7 +65,7 @@ module DBI::DBD::AltPg::Type
       # XXX assumes integer_datetimes XXX
       # XXX we ignore timezone for now... XXX
       def self.parse(bytes)
-        Util::PgTimestampEpoch + Util.unpack_int64_big(bytes) / (86_400 * 1e6)
+        Util::PgTimestampEpoch + Rational(Util.unpack_int64_big(bytes), 86_400 * 1_000_000)
       end
     end
 
