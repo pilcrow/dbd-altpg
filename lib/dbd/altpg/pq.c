@@ -34,7 +34,8 @@ static ID id_new;
 static ID id_inspect;
 static ID id_translate_parameters;
 static VALUE sym_type_name;
-static VALUE sym_dbi_type;
+static VALUE sym_text_conversion;
+static VALUE sym_binary_conversion;
 
 struct altpg_params {
 	int nparams;
@@ -54,7 +55,7 @@ struct AltPg_St {
 	unsigned int nfields;
 	unsigned int ntuples;
 	unsigned int row_number;
-	int resultFormat;
+	int result_format;
 };
 
 /* ==== Helper functions ================================================== */
@@ -114,6 +115,7 @@ fd_await_writeable(fd)
 static void
 altpg_params_initialize(struct altpg_params *ap, int nparams)
 {
+	/* FIXME - we can skip setting param_lengths if result_format == 0 */
 	ap->nparams = nparams;
 	ap->param_values = ALLOC_N(char *, nparams);
 	MEMZERO(ap->param_values, char *, nparams);
@@ -248,7 +250,7 @@ altpg_db_direct_exec(struct AltPg_Db *db, VALUE *out, const char *query, VALUE a
 	                            params.param_values,
 															params.param_lengths,
 															NULL,
-															0);
+															1);
 	altpg_params_clear(&params);
 
 	if (!send_ok) raise_PQsend_error(db->conn);
@@ -637,7 +639,7 @@ AltPg_St_execute(VALUE self)
 	                              st->params.param_values,
 	                              st->params.param_lengths,
 	                              NULL,
-	                              0);   /* text format */
+	                              st->result_format);
 	if (st->params.nparams > 0) rb_ary_clear(iv_params);
 
 	if (!send_ok) {
@@ -730,12 +732,15 @@ AltPg_St_column_info(VALUE self)
 	// XXX - @column_info ||= (...).freeze
 	// XXX - module-level strings for keys?
 	VALUE ret;
+	VALUE conversion_key; /* :text_conversion or :binary_conversion */
 	VALUE iv_type_map;
 	int i;
 
 	st = altpg_st_get_unfinished(self);
 	ret = rb_ary_new2(st->nfields);
 	iv_type_map = rb_iv_get(self, "@type_map");
+
+	conversion_key = PQfformat(st->res, 0) == 1 ? sym_binary_conversion : sym_text_conversion;
 
 	for (i = 0; i < st->nfields; ++i) {
 		VALUE col = rb_hash_new();
@@ -756,7 +761,7 @@ AltPg_St_column_info(VALUE self)
 		                  rb_hash_aref(type_map_entry, sym_type_name));
 		// col['dbi_type'] = @type_map[16][:dbi_type]
 		rb_hash_aset(col, rb_str_new2("dbi_type"),
-		                  rb_hash_aref(type_map_entry, sym_dbi_type));
+		                  rb_hash_aref(type_map_entry, conversion_key));
 
 		typmod = PQfmod(st->res, i);
 		typlen = PQfsize(st->res, i);
@@ -786,7 +791,7 @@ AltPg_St_result_format(VALUE self)
 
 	st = altpg_st_get_unfinished(self);
 
-	return INT2FIX(st->resultFormat);
+	return INT2FIX(st->result_format);
 }
 
 
@@ -796,7 +801,7 @@ AltPg_St_result_format_set(VALUE self, VALUE fmtcode)
 	struct AltPg_St *st;
 
 	st = altpg_st_get_unfinished(self);
-	st->resultFormat = FIX2INT(fmtcode);
+	st->result_format = FIX2INT(fmtcode);
 
 	return Qnil;
 }
@@ -836,5 +841,6 @@ Init_pq()
 	id_inspect              = rb_intern("inspect");
 	id_translate_parameters = rb_intern("translate_parameters");
 	sym_type_name = ID2SYM(rb_intern("type_name"));
-	sym_dbi_type  = ID2SYM(rb_intern("dbi_type"));
+	sym_text_conversion  = ID2SYM(rb_intern("text_conversion"));
+	sym_binary_conversion  = ID2SYM(rb_intern("binary_conversion"));
 }
