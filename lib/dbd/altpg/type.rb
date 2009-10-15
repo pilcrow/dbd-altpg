@@ -7,7 +7,7 @@ module DBI::DBD::AltPg::Type
       PgDateEpoch = Date.civil(2000, 01, 01)
       PgTimestampEpoch = DateTime.civil(2000, 01, 01)
 
-      MAX_INT16  = 2**16 - 1
+      MAX_INT16  = 2**15 - 1
       MAX_UINT16 = 2**16
 
       MAX_INT32  = 2**31 - 1
@@ -42,6 +42,18 @@ module DBI::DBD::AltPg::Type
       end
     end
 
+    class Float8
+      def self.parse(bytes)
+        bytes.unpack('G')
+      end
+    end
+
+    class Float4
+      def self.parse(bytes)
+        bytes.unpack('g')
+      end
+    end
+
     class Int8
       def self.parse(bytes)
         return Util.unpack_int64_big(bytes)
@@ -57,6 +69,41 @@ module DBI::DBD::AltPg::Type
     class Int2
       def self.parse(bytes)
         return Util.unpack_int16_big(bytes)
+      end
+    end
+
+    class Numeric
+
+      # include/pgsql/server/utils/numeric.h
+      NUMERIC_POS = 0x0000
+      NUMERIC_NEG = 0x4000
+      NUMERIC_NAN = 0xC000
+
+      def self.parse(bytes)
+        # u16 ndigits, i16 weight, u16 sign, u16 dscale
+        ndigits, sign, dscale = bytes.unpack('n xx n n')
+        weight = Util.unpack_int16_big(bytes[2,2])
+
+        return not_a_number if sign == NUMERIC_NAN
+
+        offset = 8
+        r = 0
+
+        ndigits.downto(1) do
+          r += Util.unpack_int16_big(bytes[offset,2]) * (10_000**weight)
+          weight -= 1
+          offset += 2
+        end
+        r = r.to_f if r.is_a?(::Rational)
+        r = -r if sign == NUMERIC_NEG
+        r
+      end
+
+      def self.not_a_number
+        @nan ||= begin
+                   require 'bigdecimal'
+                   BigDecimal.new('NaN')
+                 end
       end
     end
 
