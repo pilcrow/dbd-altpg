@@ -115,7 +115,7 @@ fd_await_writeable(fd)
 static void
 altpg_params_initialize(struct altpg_params *ap, int nparams)
 {
-	/* FIXME - we can skip setting param_lengths if result_format == 0 */
+	/* FIXME - we can skip setting param_lengths if text protocol */
 	ap->nparams = nparams;
 	ap->param_values = ALLOC_N(char *, nparams);
 	MEMZERO(ap->param_values, char *, nparams);
@@ -534,6 +534,7 @@ AltPg_St_s_alloc(VALUE klass)
 {
 	struct AltPg_St *st = ALLOC(struct AltPg_St);
 	MEMZERO(st, struct AltPg_St, 1);
+	st->result_format = 1;
 	return Data_Wrap_Struct(klass, 0, AltPg_St_s_free, st);
 }
 
