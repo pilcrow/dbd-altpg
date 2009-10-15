@@ -211,12 +211,13 @@ eosql
           when 'int4'                      then :Int4
           when 'int8'                      then :Int8
           when 'varchar'                   then :Varchar
-            #FIXME#when 'float4','float8'           then DBI::Type::Float
-            #FIXME#when 'time', 'timetz'            then DBI::Type::Timestamp
+          when 'float4'                    then :Float4
+          when 'float8'                    then :Float8
+          #FIXME#when 'time', 'timetz'            then DBI::Type::Timestamp
           when 'timestamp', 'timestamptz'  then :Timestamp
           when 'date'                      then :Date
-            #FIXME#when 'decimal', 'numeric'        then DBI::Type::Decimal
-            #when 'bytea'                     then DBI::DBD::Pg::Type::ByteA
+          when 'numeric'                   then :Numeric
+          #FIXME#when 'bytea'                     then DBI::DBD::Pg::Type::ByteA
           when 'enum'                      then :Varchar
           else                                  :Varchar
           end
@@ -249,6 +250,7 @@ WHERE
   AND
   t.typname NOT LIKE E'\\_%'
 eosql
+    raw_sth.result_format = 0
     raw_sth.execute
     while r = raw_sth.fetch
       oid, typname = r
