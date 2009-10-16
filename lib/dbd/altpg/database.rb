@@ -158,7 +158,7 @@ eosql
   end
 
   def prepare(query)
-    DBI::DBD::AltPg::Statement.new(self, query)
+    DBI::DBD::AltPg::Statement.new(self, query, @attr.fetch('altpg_result_format', 0))
   end
 
   def __set_variable(var, value, is_local = false)
