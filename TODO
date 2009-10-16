@@ -5,6 +5,7 @@ TODO:
 
  - Binary protocol (not text) support
    ?? Unclear if packing/unpacking will be faster than stringifying
+   dbh['altpg_result_format'] and sth['altpg_result_format']
 
  - restrict to protocol 3, server version 8.0+
 
@@ -12,6 +13,11 @@ TODO:
    ?? as blob objects?
 
  - array support
+
+ - Document DATE/TIMESTAMP Date/DateTime dissonance
+   Ruby and PG don't agree on calendar reforms hundreds of years ago...
+
+ - gem-ify
 
 DONE:
  - h['altpg_client_encoding']
