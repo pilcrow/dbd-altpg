@@ -185,6 +185,7 @@ async_PQgetResult(PGconn *conn)
 	PQconsumeInput(conn);
 	while (PQisBusy(conn)) {
 		fd_await_readable(fd);
+		PQconsumeInput(conn);
 	}
 
 	/* ruby-pg-0.8.0 pgconn_get_last_result(), except we PQclear as needed */
@@ -534,13 +535,12 @@ AltPg_St_s_alloc(VALUE klass)
 {
 	struct AltPg_St *st = ALLOC(struct AltPg_St);
 	MEMZERO(st, struct AltPg_St, 1);
-	st->result_format = 1;
 	return Data_Wrap_Struct(klass, 0, AltPg_St_s_free, st);
 }
 
 /* FIXME:  paramTypes ? */
 static VALUE
-AltPg_St_initialize(VALUE self, VALUE parent, VALUE query)
+AltPg_St_initialize(VALUE self, VALUE parent, VALUE query, VALUE default_resfmt)
 {
 	struct AltPg_Db *db;
 	struct AltPg_St *st;
@@ -559,6 +559,7 @@ AltPg_St_initialize(VALUE self, VALUE parent, VALUE query)
 		         "Attempt to create AltPg::Statement from invalid AltPg::Database (db %p, db->conn %p)", db, db ? db->conn : NULL);
 	}
 	st->conn = db->conn;
+	st->result_format = FIX2INT(default_resfmt);
 
 	SafeStringValue(query);
 	query = rb_funcall(rbx_mAltPg, id_translate_parameters, 1, query);
@@ -825,7 +826,7 @@ Init_pq()
 	rb_define_method(rbx_cDb, "do", AltPg_Db_do, -1);
 
 	rb_define_alloc_func(rbx_cSt, AltPg_St_s_alloc);
-	rb_define_method(rbx_cSt, "initialize", AltPg_St_initialize, 2);
+	rb_define_method(rbx_cSt, "initialize", AltPg_St_initialize, 3);
 	rb_define_method(rbx_cSt, "bind_param", AltPg_St_bind_param, 3);
 	rb_define_method(rbx_cSt, "cancel", AltPg_St_cancel, 0);
 	rb_define_method(rbx_cSt, "finish", AltPg_St_finish, 0);

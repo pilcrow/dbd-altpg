@@ -74,4 +74,5 @@ end
 require 'dbd/altpg/driver'
 require 'dbd/altpg/type'
 require 'dbd/altpg/database'
+require 'dbd/altpg/statement'
 require 'dbd/altpg/pq'
