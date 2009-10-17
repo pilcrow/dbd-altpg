@@ -15,6 +15,14 @@ module OutputTypeTestCases
     @dbh.disconnect rescue nil
   end
 
+  def assert_datetime_equal(expected, actual, msg = nil)
+    [:zone, :sec_fraction, :sec, :min, :hour, :mday, :mon, :year].each do |m|
+      failmsg = "comparing #{m}"
+      failmsg += " #{msg}" if msg
+      assert_equal(expected.__send__(m), actual.__send__(m), failmsg)
+    end
+  end
+
   def assert_converted_type(expected, sql, *params)
     row = @dbh.select_one(sql, *params)
     unless row.is_a? ::DBI::Row and row.size == 1
@@ -22,14 +30,14 @@ module OutputTypeTestCases
     end
     value = row[0]
 
-    # XXX - this kind_of? test is highly dubious, and un-Rubyish in its
-    #       demands.  Who cares if ::bigint is a BigDecimal or Bignum or
-    #       Math::My::Extension, so long as it looks, sounds and quacks
-    #       like a duck.
-    assert_kind_of(expected.class, value)
-
     message = build_message message, '<?> is not <?> (?)', value, expected, sql
-    assert_equal(expected, value, message)
+
+    if expected.is_a?(::DateTime)
+      # sigh
+      assert_datetime_equal(expected, value, message)
+    else
+      assert_equal(expected, value, message)
+    end
   end
 
   def test_boolean # a.k.a. bool
@@ -76,8 +84,10 @@ module OutputTypeTestCases
 
   def test_real # a.k.a. float4
     assert_converted_type(0.0, "SELECT 0::real")
-    assert_converted_type(0.001, "SELECT 0.001::real")
-    assert_converted_type(-0.001, "SELECT -0.001::real")
+    assert_converted_type(10.0, "SELECT 10::real")
+    assert_converted_type(-10.0, "SELECT -10::real")
+    assert_converted_type(0.2, "SELECT 0.2::real")
+    assert_converted_type(-0.2, "SELECT -0.2::real")
   end
 
   def test_double_precision # a.k.a. float8
@@ -114,16 +124,29 @@ module OutputTypeTestCases
   end
 
   def test_timestamp
+    # XXX - high precision?
     assert_converted_type(DateTime.parse('2004-02-29 23:59:39'),
                           "SELECT '2004-02-29 23:59:39'::timestamp without time zone")
+    assert_converted_type(DateTime.parse('1999-09-09 09:09:09.0909'),
+                          "SELECT '1990-09-09 09:09:09.0909'::timestamp without time zone + INTERVAL '9 YEARS'")
   end
 
-  def test_timestamp_with_time_zone # a.k.a. timestamptz
-    pg = @dbh.select_one("SELECT '2009-10-15 23:59:59.9-05'::timestamp with time zone")[0]
-    puts "#{DateTime.parse('2009-10-15T23:59:59.9-05:00').to_s} ... #{pg.to_s}"
-    assert_converted_type(DateTime.parse('2009-10-15T23:59:59.9-05:00').to_s,
-                          "SELECT '2009-10-15 23:59:59.9-05'::timestamp with time zone")
+  ## FIXME ##
+  ##def test_timestamp_with_time_zone # a.k.a. timestamptz
+  ##  assert_converted_type(DateTime.parse('2009-10-15T23:59:59.9-05:00'),
+  ##                        "SELECT '2009-10-15 23:59:59.9-05'::timestamp with time zone")
+  ##end
 
+  def test_numeric # a.k.a. decimal
+    assert_converted_type(0, "SELECT 0::NUMERIC")
+    assert_converted_type(0.0, "SELECT 0.0::NUMERIC")
+    assert_converted_type(0.1, "SELECT 0.1::NUMERIC")
+    assert_converted_type(1, "SELECT 1::NUMERIC")
+    assert_converted_type(-1, "SELECT -1::NUMERIC")
+    assert_converted_type(-0.1, "SELECT -0.1::NUMERIC")
+    assert_converted_type(12_345_678, "SELECT 12345678::NUMERIC")
+    assert_converted_type(-12_345_678.9, "SELECT -12345678.9::NUMERIC")
+    assert_converted_type(-10_001.000056, "SELECT -10001.000056::NUMERIC")
   end
 end
 
@@ -132,7 +155,7 @@ class TestAltPgProtocolText < Test::Unit::TestCase
 
   def setup
     super
-    @dbh['altpg_row_format'] = 0
+    @dbh['altpg_result_format'] = 0
   end
 end
 
@@ -140,7 +163,21 @@ class TestAltPgProtocolBinary < Test::Unit::TestCase
   include OutputTypeTestCases
   def setup
     super
-    @dbh['altpg_row_format'] = 1
+    @dbh['altpg_result_format'] = 1
+  end
+
+  def test_array
+    assert_converted_type([ 1, 2, 3 ],
+                          "SELECT ARRAY[ 1, 2, 3 ]")
+    assert_converted_type([ [ ['a', 'b'], ['y', 'z'] ],
+                            [ ['0', '1'], ['8', '9'] ],
+                            [ ['~', '!'], ['_', '+'] ] ],
+                          <<'__eosql')
+SELECT ARRAY[
+              ARRAY[ ARRAY['a', 'b'], ARRAY['y', 'z'] ],
+              ARRAY[ ARRAY['0', '1'], ARRAY['8', '9'] ],
+              ARRAY[ ARRAY['~', '!'], ARRAY['_', '+'] ]
+            ]
+__eosql
   end
 end
-
