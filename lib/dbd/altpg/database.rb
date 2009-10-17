@@ -16,6 +16,10 @@ class DBI::DBD::AltPg::Database < DBI::BaseDatabase
     case key
     when 'altpg_client_encoding'
       __show_variable('client_encoding')
+    when 'altpg_result_format'
+      # passed to Statement.new
+    when /^altpg_/
+      raise DBI::NotSupportedError, "Option dbh['#{key}'] is not supported"
     else
       @attr[key]
     end
@@ -31,6 +35,10 @@ class DBI::DBD::AltPg::Database < DBI::BaseDatabase
       end
     when 'altpg_client_encoding'
       __set_variable('client_encoding', value)
+    when 'altpg_result_format'
+      # passed to Statement.new
+    when /^altpg_/
+      raise DBI::NotSupportedError, "Option dbh['#{key}'] is not supported"
     end
     @attr[key] = value
   end
@@ -205,6 +213,7 @@ eosql
   end
 
   def pg_type_to_binary(typname)
+    bintypes = DBI::DBD::AltPg::Type::Binary
     sym = case typname
           when 'bool'                      then :Boolean
           when 'int2'                      then :Int2
@@ -219,6 +228,12 @@ eosql
           when 'numeric'                   then :Numeric
           #FIXME#when 'bytea'                     then DBI::DBD::Pg::Type::ByteA
           when 'enum'                      then :Varchar
+          when '_int4'                     then :ArrayInt4
+          when /^_(.+)$/                   then
+            scalar_type = pg_type_to_binary($1)
+            return ::Class.new(DBI::DBD::AltPg::Type::Binary::Array) do
+                     @scalar_type = scalar_type
+                   end
           else                                  :Varchar
           end
     return DBI::DBD::AltPg::Type::Binary.const_get(sym)
@@ -228,16 +243,16 @@ eosql
     # {
     #   pg_oid => { :type_name => typname, :dbi_type => DBI::Type::Klass }
     #   ...
-    # }
+    #
     #
     # We perform this query "raw," not as a DBI::StatementHandle, since
     # we (obviously) haven't loaded the typemappings needed for the higher
     # layer adapter to function.
     #
     map = Hash.new(
-            {:type_name         => 'unknown',
-             :text_conversion   => DBI::Type::Varchar,
-             :binary_conversion => DBI::DBD::AltPg::Type::Binary::Varchar}
+            {:type_name => 'unknown',
+             :text      => DBI::Type::Varchar,
+             :binary    => DBI::DBD::AltPg::Type::Binary::Varchar}
           )
     raw_sth = prepare(<<'eosql')
 SELECT
@@ -246,18 +261,15 @@ SELECT
 FROM
   pg_catalog.pg_type t
 WHERE
-  t.typtype IN ('b', 'e')
-  AND
-  t.typname NOT LIKE E'\\_%'
+  t.typtype IN ('b', 'e') -- 'b' base or 'e' enum
 eosql
-    raw_sth.result_format = 0
+    raw_sth.result_format = 0 # XXX - go binary, store raw (packed) OIDs
     raw_sth.execute
     while r = raw_sth.fetch
       oid, typname = r
-      # XXX - when we go binary, we'll need to unpack
       map[oid.to_i] = { :type_name => typname,
-                        :text_conversion   => pg_type_to_dbi(typname),
-                        :binary_conversion => pg_type_to_binary(typname) }
+                        :text      => pg_type_to_dbi(typname),
+                        :binary    => pg_type_to_binary(typname) }
     end
     map
   ensure

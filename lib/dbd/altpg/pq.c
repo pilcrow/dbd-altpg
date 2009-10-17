@@ -34,8 +34,8 @@ static ID id_new;
 static ID id_inspect;
 static ID id_translate_parameters;
 static VALUE sym_type_name;
-static VALUE sym_text_conversion;
-static VALUE sym_binary_conversion;
+static VALUE sym_text;
+static VALUE sym_binary;
 
 struct altpg_params {
 	int nparams;
@@ -742,7 +742,7 @@ AltPg_St_column_info(VALUE self)
 	ret = rb_ary_new2(st->nfields);
 	iv_type_map = rb_iv_get(self, "@type_map");
 
-	conversion_key = PQfformat(st->res, 0) == 1 ? sym_binary_conversion : sym_text_conversion;
+	conversion_key = PQfformat(st->res, 0) == 1 ? sym_binary : sym_text;
 
 	for (i = 0; i < st->nfields; ++i) {
 		VALUE col = rb_hash_new();
@@ -842,7 +842,7 @@ Init_pq()
 	id_new                  = rb_intern("new");
 	id_inspect              = rb_intern("inspect");
 	id_translate_parameters = rb_intern("translate_parameters");
-	sym_type_name = ID2SYM(rb_intern("type_name"));
-	sym_text_conversion  = ID2SYM(rb_intern("text_conversion"));
-	sym_binary_conversion  = ID2SYM(rb_intern("binary_conversion"));
+	sym_type_name    = ID2SYM(rb_intern("type_name"));
+	sym_text         = ID2SYM(rb_intern("text"));
+	sym_binary       = ID2SYM(rb_intern("binary"));
 }
