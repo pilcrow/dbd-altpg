@@ -1,5 +1,6 @@
 TODO:
  - Test cases
+   Verify client_encoding, etc.
 
  - Documentation
 
@@ -18,6 +19,18 @@ TODO:
    Ruby and PG don't agree on calendar reforms hundreds of years ago...
 
  - gem-ify
+
+ - types.rb, type conversions
+   . Rename to type.rb, reimplement in C or autoload in ruby?
+   . Typemap OIDs:  We guess right now that Oid is big-endian 32 bit int,
+     but pg defines as "unsigned int".  Should avoid question of
+     representation entirely, just leave opaque.
+   . Drop 'text' protocol support
+   . Move pg_type.typname => AltPg:: class name map into AltPg::Type,
+     and out of a case/when function in database.rb.
+
+ - AltPg::Statement
+   . cache column_info -- called at least twice?
 
 DONE:
  - h['altpg_client_encoding']
