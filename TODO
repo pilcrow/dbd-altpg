@@ -4,16 +4,10 @@ TODO:
 
  - Documentation
 
- - Binary protocol (not text) support
-   ?? Unclear if packing/unpacking will be faster than stringifying
-   dbh['altpg_result_format'] and sth['altpg_result_format']
-
- - restrict to protocol 3, server version 8.0+
+ - Bytea support
 
  - BLOB support
    ?? as blob objects?
-
- - array support
 
  - Document DATE/TIMESTAMP Date/DateTime dissonance
    Ruby and PG don't agree on calendar reforms hundreds of years ago...
@@ -25,14 +19,24 @@ TODO:
    . Typemap OIDs:  We guess right now that Oid is big-endian 32 bit int,
      but pg defines as "unsigned int".  Should avoid question of
      representation entirely, just leave opaque.
-   . Drop 'text' protocol support
-   . Move pg_type.typname => AltPg:: class name map into AltPg::Type,
-     and out of a case/when function in database.rb.
+   . Simpler type management:
+     - Subclass Type::Array per-connection, passing in the simple map of
+       { Oid => typname } (default 'varchar').  Avoids creating ArrayFoo
+       classes for every type not handled specially.  Don't record any
+       array Oids in the per-connection typemap.
 
  - AltPg::Statement
    . cache column_info -- called at least twice?
 
+ - Choke if not integer datestyle?
+
 DONE:
+ - restrict to protocol 3, server version 8.0+
+
+ - Dropped 'text' support
+
+ - array support
+
  - h['altpg_client_encoding']
 
  - dbh.__set_variable, dbh.__show_variable
