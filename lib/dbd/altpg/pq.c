@@ -34,8 +34,7 @@ static ID id_new;
 static ID id_inspect;
 static ID id_translate_parameters;
 static VALUE sym_type_name;
-static VALUE sym_text;
-static VALUE sym_binary;
+static VALUE sym_dbi_type;
 
 struct altpg_params {
 	int nparams;
@@ -55,7 +54,6 @@ struct AltPg_St {
 	unsigned int nfields;
 	unsigned int ntuples;
 	unsigned int row_number;
-	int result_format;
 };
 
 /* ==== Helper functions ================================================== */
@@ -540,7 +538,7 @@ AltPg_St_s_alloc(VALUE klass)
 
 /* FIXME:  paramTypes ? */
 static VALUE
-AltPg_St_initialize(VALUE self, VALUE parent, VALUE query, VALUE default_resfmt)
+AltPg_St_initialize(VALUE self, VALUE parent, VALUE query)
 {
 	struct AltPg_Db *db;
 	struct AltPg_St *st;
@@ -559,7 +557,6 @@ AltPg_St_initialize(VALUE self, VALUE parent, VALUE query, VALUE default_resfmt)
 		         "Attempt to create AltPg::Statement from invalid AltPg::Database (db %p, db->conn %p)", db, db ? db->conn : NULL);
 	}
 	st->conn = db->conn;
-	st->result_format = FIX2INT(default_resfmt);
 
 	SafeStringValue(query);
 	query = rb_funcall(rbx_mAltPg, id_translate_parameters, 1, query);
@@ -641,7 +638,7 @@ AltPg_St_execute(VALUE self)
 	                              st->params.param_values,
 	                              st->params.param_lengths,
 	                              NULL,
-	                              st->result_format);
+	                              1);
 	if (st->params.nparams > 0) rb_ary_clear(iv_params);
 
 	if (!send_ok) {
@@ -692,13 +689,15 @@ AltPg_St_fetch(VALUE self)
 		return Qnil;
 	}
 
-	//printf("fetch index %d (of %d)\n", st->row_number, st->ntuples);
 	ret = rb_ary_new2(st->nfields);
 	for (i = 0; i < st->nfields; ++i) {
 		VALUE val = PQgetisnull(st->res, st->row_number, i)
 		            ? Qnil
 								: rb_str_new(PQgetvalue(st->res, st->row_number, i),
 		                         PQgetlength(st->res, st->row_number, i));
+		//printf("\trow %d, col %d. bytes of len %d%s\n",
+		//       st->row_number, i, PQgetlength(st->res, st->row_number, i),
+		//			 PQgetisnull(st->res, st->row_number, i) ? "(NULL)" : "");
 		rb_ary_store(ret, i, val);
 	}
 
@@ -734,15 +733,12 @@ AltPg_St_column_info(VALUE self)
 	// XXX - @column_info ||= (...).freeze
 	// XXX - module-level strings for keys?
 	VALUE ret;
-	VALUE conversion_key; /* :text_conversion or :binary_conversion */
 	VALUE iv_type_map;
 	int i;
 
 	st = altpg_st_get_unfinished(self);
 	ret = rb_ary_new2(st->nfields);
 	iv_type_map = rb_iv_get(self, "@type_map");
-
-	conversion_key = PQfformat(st->res, 0) == 1 ? sym_binary : sym_text;
 
 	for (i = 0; i < st->nfields; ++i) {
 		VALUE col = rb_hash_new();
@@ -763,7 +759,13 @@ AltPg_St_column_info(VALUE self)
 		                  rb_hash_aref(type_map_entry, sym_type_name));
 		// col['dbi_type'] = @type_map[16][:dbi_type]
 		rb_hash_aset(col, rb_str_new2("dbi_type"),
-		                  rb_hash_aref(type_map_entry, conversion_key));
+		                  rb_hash_aref(type_map_entry, sym_dbi_type));
+		/*
+		printf("\tcolumn \"%s\", Oid %lu, type %s\n",
+					 PQfname(st->res, i),
+		       type_oid,
+		       RSTRING_PTR(rb_hash_aref(type_map_entry, sym_type_name)));
+		*/
 
 		typmod = PQfmod(st->res, i);
 		typlen = PQfsize(st->res, i);
@@ -786,28 +788,6 @@ AltPg_St_column_info(VALUE self)
 	return ret;
 }
 
-static VALUE
-AltPg_St_result_format(VALUE self)
-{
-	struct AltPg_St *st;
-
-	st = altpg_st_get_unfinished(self);
-
-	return INT2FIX(st->result_format);
-}
-
-
-static VALUE
-AltPg_St_result_format_set(VALUE self, VALUE fmtcode)
-{
-	struct AltPg_St *st;
-
-	st = altpg_st_get_unfinished(self);
-	st->result_format = FIX2INT(fmtcode);
-
-	return Qnil;
-}
-
 void
 Init_pq()
 {
@@ -826,7 +806,7 @@ Init_pq()
 	rb_define_method(rbx_cDb, "do", AltPg_Db_do, -1);
 
 	rb_define_alloc_func(rbx_cSt, AltPg_St_s_alloc);
-	rb_define_method(rbx_cSt, "initialize", AltPg_St_initialize, 3);
+	rb_define_method(rbx_cSt, "initialize", AltPg_St_initialize, 2);
 	rb_define_method(rbx_cSt, "bind_param", AltPg_St_bind_param, 3);
 	rb_define_method(rbx_cSt, "cancel", AltPg_St_cancel, 0);
 	rb_define_method(rbx_cSt, "finish", AltPg_St_finish, 0);
@@ -834,8 +814,6 @@ Init_pq()
 	rb_define_method(rbx_cSt, "fetch", AltPg_St_fetch, 0);
 	rb_define_method(rbx_cSt, "rows", AltPg_St_rows, 0);
 	rb_define_method(rbx_cSt, "column_info", AltPg_St_column_info, 0);
-	rb_define_method(rbx_cSt, "result_format",  AltPg_St_result_format, 0);
-	rb_define_method(rbx_cSt, "result_format=", AltPg_St_result_format_set, 1);
 
 	id_to_s                 = rb_intern("to_s");
 	id_to_i                 = rb_intern("to_i");
@@ -843,6 +821,5 @@ Init_pq()
 	id_inspect              = rb_intern("inspect");
 	id_translate_parameters = rb_intern("translate_parameters");
 	sym_type_name    = ID2SYM(rb_intern("type_name"));
-	sym_text         = ID2SYM(rb_intern("text"));
-	sym_binary       = ID2SYM(rb_intern("binary"));
+	sym_dbi_type     = ID2SYM(rb_intern("dbi_type"));
 }
