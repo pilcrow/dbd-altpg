@@ -16,8 +16,6 @@ class DBI::DBD::AltPg::Database < DBI::BaseDatabase
     case key
     when 'altpg_client_encoding'
       __show_variable('client_encoding')
-    when 'altpg_result_format'
-      # passed to Statement.new
     when /^altpg_/
       raise DBI::NotSupportedError, "Option dbh['#{key}'] is not supported"
     else
@@ -35,8 +33,6 @@ class DBI::DBD::AltPg::Database < DBI::BaseDatabase
       end
     when 'altpg_client_encoding'
       __set_variable('client_encoding', value)
-    when 'altpg_result_format'
-      # passed to Statement.new
     when /^altpg_/
       raise DBI::NotSupportedError, "Option dbh['#{key}'] is not supported"
     end
@@ -166,7 +162,7 @@ eosql
   end
 
   def prepare(query)
-    DBI::DBD::AltPg::Statement.new(self, query, @attr.fetch('altpg_result_format', 0))
+    DBI::DBD::AltPg::Statement.new(self, query)
   end
 
   def __set_variable(var, value, is_local = false)
@@ -195,81 +191,34 @@ eosql
     dbh
   end
 
-  def pg_type_to_dbi(typname)
-    # Adapted from ruby-dbd-pg-0.3.8
-    case typname
-    when 'bool'                      then DBI::Type::Boolean
-    when 'int8', 'int4', 'int2'      then DBI::Type::Integer
-    when 'varchar'                   then DBI::Type::Varchar
-    when 'float4','float8'           then DBI::Type::Float
-    when 'time', 'timetz'            then DBI::Type::Timestamp
-    when 'timestamp', 'timestamptz'  then DBI::Type::Timestamp
-    when 'date'                      then DBI::Type::Timestamp
-    when 'decimal', 'numeric'        then DBI::Type::Decimal
-    #when 'bytea'                     then DBI::DBD::Pg::Type::ByteA
-    when 'enum'                      then DBI::Type::Varchar
-    else                                  DBI::Type::Varchar
-    end
-  end
-
-  def pg_type_to_binary(typname)
-    bintypes = DBI::DBD::AltPg::Type::Binary
-    sym = case typname
-          when 'bool'                      then :Boolean
-          when 'int2'                      then :Int2
-          when 'int4'                      then :Int4
-          when 'int8'                      then :Int8
-          when 'varchar'                   then :Varchar
-          when 'float4'                    then :Float4
-          when 'float8'                    then :Float8
-          #FIXME#when 'time', 'timetz'            then DBI::Type::Timestamp
-          when 'timestamp', 'timestamptz'  then :Timestamp
-          when 'date'                      then :Date
-          when 'numeric'                   then :Numeric
-          #FIXME#when 'bytea'                     then DBI::DBD::Pg::Type::ByteA
-          when 'enum'                      then :Varchar
-          when '_int4'                     then :ArrayInt4
-          when /^_(.+)$/                   then
-            scalar_type = pg_type_to_binary($1)
-            return ::Class.new(DBI::DBD::AltPg::Type::Binary::Array) do
-                     @scalar_type = scalar_type
-                   end
-          else                                  :Varchar
-          end
-    return DBI::DBD::AltPg::Type::Binary.const_get(sym)
-  end
-
   def generate_type_map
     # {
     #   pg_oid => { :type_name => typname, :dbi_type => DBI::Type::Klass }
     #   ...
-    #
-    #
-    # We perform this query "raw," not as a DBI::StatementHandle, since
-    # we (obviously) haven't loaded the typemappings needed for the higher
-    # layer adapter to function.
-    #
+    # }
+
+    pg_type_map = ::DBI::DBD::AltPg::Type::PgTypeMap
+
     map = Hash.new(
             {:type_name => 'unknown',
-             :text      => DBI::Type::Varchar,
-             :binary    => DBI::DBD::AltPg::Type::Binary::Varchar}
+             :dbi_type  => pg_type_map['unknown']}
           )
     raw_sth = prepare(<<'eosql')
 SELECT
-  t.oid,
+  t.oid::character varying,
   t.typname
 FROM
   pg_catalog.pg_type t
 WHERE
-  t.typtype IN ('b', 'e') -- 'b' base or 'e' enum
+  t.typtype IN ('b', 'e')       -- 'b' base or 'e' enum
+--  AND
+--  t.typname NOT LIKE E'\\_%'    -- ARRAY[]s are handled specially
 eosql
-    raw_sth.result_format = 0 # XXX - go binary, store raw (packed) OIDs
     raw_sth.execute
     while r = raw_sth.fetch
       oid, typname = r
       map[oid.to_i] = { :type_name => typname,
-                        :text      => pg_type_to_dbi(typname),
-                        :binary    => pg_type_to_binary(typname) }
+                        :dbi_type  => pg_type_map[typname] }
     end
     map
   ensure
