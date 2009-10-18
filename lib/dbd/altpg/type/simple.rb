@@ -137,7 +137,9 @@ module DBI::DBD::AltPg::Type
   end
 
   simple_pg_type :CharacterVarying => [ :varchar, :enum ] do
-    def unpack(bytes)
+    # Here we override ::parse(), for time efficiency, as this method
+    # is quite frequently invoked.  (CharacterVarying is the default handler)
+    def parse(bytes)
       bytes
     end
   end
