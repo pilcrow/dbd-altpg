@@ -2,15 +2,12 @@
 
 require File.dirname(__FILE__) + "/test_helper"
 
-module OutputTypeTestCases
-
+class TestAltPgTypes < Test::Unit::TestCase
   def setup
-    super
     @dbh = DBI.connect(*TestHelper::ConnArgs)
   end
 
   def teardown
-    super
   ensure
     @dbh.disconnect rescue nil
   end
@@ -41,6 +38,8 @@ module OutputTypeTestCases
   end
 
   def test_boolean # a.k.a. bool
+    assert_converted_type(nil, "SELECT NULL::boolean")
+
     assert_converted_type(false, "SELECT false")
     assert_converted_type(false, "SELECT 'foo' IS NULL")
     assert_converted_type(false, "SELECT 'f'::BOOLEAN")
@@ -55,6 +54,8 @@ module OutputTypeTestCases
   end
 
   def test_smallint # a.k.a. int2
+    assert_converted_type(nil, "SELECT NULL::smallint")
+
     max_int16 = 2**15 - 1
     assert_converted_type(0, "SELECT 0::smallint")
     assert_converted_type(-1, "SELECT -1::smallint")
@@ -64,6 +65,8 @@ module OutputTypeTestCases
   end
 
   def test_integer # a.k.a. int, int4
+    assert_converted_type(nil, "SELECT NULL::integer")
+
     max_int32 = 2**31 - 1
     assert_converted_type(0, "SELECT 0::integer")
     assert_converted_type(-1, "SELECT -1::integer")
@@ -77,12 +80,16 @@ module OutputTypeTestCases
     # meaning that PG bigint/int8 support can't actually reach
     # 2^63-1 ...
     # :(
+    assert_converted_type(nil, "SELECT NULL::bigint")
+
     assert_converted_type(0, "SELECT 0::bigint")
     assert_converted_type(-1, "SELECT -1::bigint")
     assert_converted_type(1, "SELECT 1::bigint")
   end
 
   def test_real # a.k.a. float4
+    assert_converted_type(nil, "SELECT NULL::real")
+
     assert_converted_type(0.0, "SELECT 0::real")
     assert_converted_type(10.0, "SELECT 10::real")
     assert_converted_type(-10.0, "SELECT -10::real")
@@ -91,18 +98,24 @@ module OutputTypeTestCases
   end
 
   def test_double_precision # a.k.a. float8
+    assert_converted_type(nil, "SELECT NULL::double precision")
+
     assert_converted_type(0.0, "SELECT 0::double precision")
     assert_converted_type(0.001, "SELECT 0.001::double precision")
     assert_converted_type(-0.001, "SELECT -0.001::double precision")
   end
 
   def test_character_varying # a.k.a. varchar
+    assert_converted_type(nil, "SELECT NULL::character varying")
+
     assert_converted_type('The "Principle of Least Surprise" means least surprise to *me*',
                           %q(SELECT 'The "Principle of Least Surprise" means least surprise to *me*'::character varying))
     assert_converted_type('', "SELECT ''::character varying")
   end
 
   def test_text
+    assert_converted_type(nil, "SELECT NULL::text")
+
     assert_converted_type('Lorem ipsum dolor sit amet, consectetur adipisicing elit,', "SELECT 'Lorem ipsum dolor sit amet, consectetur adipisicing elit,'::text")
     assert_converted_type('', "SELECT ''::text")
   end
@@ -111,6 +124,8 @@ module OutputTypeTestCases
     # Yes, this is setup() work.  Please do not tell any Test::Unit::Zealots.
     @dbh.do("DROP TYPE IF EXISTS dbi_test_enum")
     @dbh.do("CREATE TYPE dbi_test_enum AS ENUM ('foo', 'bar', 'baz')")
+    assert_converted_type(nil, "SELECT NULL::dbi_test_enum")
+
     assert_converted_type('foo', "SELECT 'foo'::dbi_test_enum")
     assert_converted_type('bar', "SELECT 'bar'::dbi_test_enum")
     assert_converted_type('baz', "SELECT 'baz'::dbi_test_enum")
@@ -119,11 +134,14 @@ module OutputTypeTestCases
   end
 
   def test_date
+    assert_converted_type(nil, "SELECT NULL::date")
+
     assert_converted_type(Date.parse('1825-10-09'),
                           "SELECT '1825-10-09'::date")
   end
 
   def test_timestamp
+    assert_converted_type(nil, "SELECT NULL::timestamp")
     # XXX - high precision?
     assert_converted_type(DateTime.parse('2004-02-29 23:59:39'),
                           "SELECT '2004-02-29 23:59:39'::timestamp without time zone")
@@ -133,11 +151,14 @@ module OutputTypeTestCases
 
   ## FIXME ##
   ##def test_timestamp_with_time_zone # a.k.a. timestamptz
+  ##  assert_converted_type(nil, "SELECT NULL::timestamp with time zone")
   ##  assert_converted_type(DateTime.parse('2009-10-15T23:59:59.9-05:00'),
   ##                        "SELECT '2009-10-15 23:59:59.9-05'::timestamp with time zone")
   ##end
 
   def test_numeric # a.k.a. decimal
+    assert_converted_type(nil, "SELECT NULL::NUMERIC")
+
     assert_converted_type(0, "SELECT 0::NUMERIC")
     assert_converted_type(0.0, "SELECT 0.0::NUMERIC")
     assert_converted_type(0.1, "SELECT 0.1::NUMERIC")
@@ -148,25 +169,10 @@ module OutputTypeTestCases
     assert_converted_type(-12_345_678.9, "SELECT -12345678.9::NUMERIC")
     assert_converted_type(-10_001.000056, "SELECT -10001.000056::NUMERIC")
   end
-end
-
-class TestAltPgProtocolText < Test::Unit::TestCase
-  include OutputTypeTestCases
-
-  def setup
-    super
-    @dbh['altpg_result_format'] = 0
-  end
-end
-
-class TestAltPgProtocolBinary < Test::Unit::TestCase
-  include OutputTypeTestCases
-  def setup
-    super
-    @dbh['altpg_result_format'] = 1
-  end
 
   def test_array
+    assert_converted_type(nil, "SELECT NULL::integer[][]")
+
     assert_converted_type([ 1, 2, 3 ],
                           "SELECT ARRAY[ 1, 2, 3 ]")
     assert_converted_type([ [ ['a', 'b'], ['y', 'z'] ],
@@ -180,4 +186,5 @@ SELECT ARRAY[
             ]
 __eosql
   end
+
 end
