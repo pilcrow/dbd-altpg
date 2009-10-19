@@ -55,12 +55,11 @@ module DBI::DBD::AltPg::Type
       def self.unpack_int16_big(bytes)
         bytes[0,2].reverse!.unpack('s').first
       end
-
       def self.unpack_int32_big(bytes)
         bytes[0,4].reverse!.unpack('s').first
       end
       def self.unpack_int64_big(bytes)
-        bytes[0,7].reverse!.unpack('q').first
+        bytes[0,8].reverse!.unpack('q').first
       end
     else # -- unpacking for big endian systems
       def self.unpack_int16_big(bytes)
