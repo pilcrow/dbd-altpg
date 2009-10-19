@@ -51,25 +51,27 @@ module DBI::DBD::AltPg::Type
     PgDateEpoch      = Date.civil(2000, 01, 01)
     PgTimestampEpoch = DateTime.civil(2000, 01, 01)
 
-    MAX_INT16  = 2**15 - 1
-    MAX_UINT16 = 2**16
+    if [1].pack('l') == "\001\000\000\000"  # little-endian
+      def self.unpack_int16_big(bytes)
+        bytes[0,2].reverse!.unpack('s').first
+      end
 
-    MAX_INT32  = 2**31 - 1
-    MAX_UINT32 = 2**32
-
-    def self.unpack_int16_big(bytes)
-      n = bytes.unpack('n').first
-      n > MAX_INT16 ? n - MAX_UINT16 : n
-    end
-
-    def self.unpack_int64_big(bytes)
-      bytes[0..7].reverse.unpack('q').first
-    end
-
-    def self.unpack_int32_big(bytes)
-      # Ruby pack/unpack has no network byte order *signed* int
-      n = bytes.unpack('N').first
-      n > MAX_INT32 ? n - MAX_UINT32 : n
+      def self.unpack_int32_big(bytes)
+        bytes[0,4].reverse!.unpack('s').first
+      end
+      def self.unpack_int64_big(bytes)
+        bytes[0,7].reverse!.unpack('q').first
+      end
+    else # -- unpacking for big endian systems
+      def self.unpack_int16_big(bytes)
+        bytes.unpack('s').first
+      end
+      def self.unpack_int32_big(bytes)
+        bytes.unpack('l').first
+      end
+      def self.unpack_int64_big(bytes)
+        bytes.unpack('q').first
+      end
     end
   end # -- module Util
 end
