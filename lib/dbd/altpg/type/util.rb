@@ -56,7 +56,7 @@ module DBI::DBD::AltPg::Type
         bytes[0,2].reverse!.unpack('s').first
       end
       def self.unpack_int32_big(bytes)
-        bytes[0,4].reverse!.unpack('s').first
+        bytes[0,4].reverse!.unpack('l').first
       end
       def self.unpack_int64_big(bytes)
         bytes[0,8].reverse!.unpack('q').first
