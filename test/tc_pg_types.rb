@@ -12,14 +12,6 @@ class TestAltPgTypes < Test::Unit::TestCase
     @dbh.disconnect rescue nil
   end
 
-  def assert_datetime_equal(expected, actual, msg = nil)
-    [:zone, :sec_fraction, :sec, :min, :hour, :mday, :mon, :year].each do |m|
-      failmsg = "comparing #{m}"
-      failmsg += " #{msg}" if msg
-      assert_equal(expected.__send__(m), actual.__send__(m), failmsg)
-    end
-  end
-
   def assert_converted_type(expected, sql, *params)
     row = @dbh.select_one(sql, *params)
     unless row.is_a? ::DBI::Row and row.size == 1
@@ -30,11 +22,25 @@ class TestAltPgTypes < Test::Unit::TestCase
     message = build_message message, '<?> is not <?> (?)', value, expected, sql
 
     if expected.is_a?(::DateTime)
-      # sigh
-      assert_datetime_equal(expected, value, message)
-    else
-      assert_equal(expected, value, message)
+      #
+      # Consistent with PostgreSQL's implementation, two DateTime objects
+      # are equivalent if they refer to the same absolute point in calendar
+      # time:
+      #
+      #   postgres=> SELECT    '2000-01-01 01:00:00+01'::timestamptz
+      #   postgres->              =
+      #   postgres->           '2000-01-01 00:00:00-00'::timestamptz;
+      #    ?column?
+      #   ----------
+      #    t
+      #   (1 row)
+      #
+      # So, normalize dt.zone() for the comparison
+      #
+      expected, value = [expected, value].map { |dt| dt.dup.new_offset(0) }
     end
+
+    assert_equal(expected, value, message)
   end
 
   def test_boolean # a.k.a. bool
@@ -76,15 +82,15 @@ class TestAltPgTypes < Test::Unit::TestCase
   end
 
   def test_bigint # a.k.a. int8
-    # Well, 'int8' support isn't actually work on my platform,
-    # meaning that PG bigint/int8 support can't actually reach
-    # 2^63-1 ...
-    # :(
     assert_converted_type(nil, "SELECT NULL::bigint")
 
     assert_converted_type(0, "SELECT 0::bigint")
     assert_converted_type(-1, "SELECT -1::bigint")
     assert_converted_type(1, "SELECT 1::bigint")
+    # Why only 2^61?  On my system, pg type 'int8' is not a true
+    # int64_t. :(
+    assert_converted_type(-2**61, "SELECT (-2^61)::bigint")
+    assert_converted_type(2**61 - 1, "SELECT (2^61)::bigint - 1")
   end
 
   def test_real # a.k.a. float4
@@ -150,11 +156,11 @@ class TestAltPgTypes < Test::Unit::TestCase
   end
 
   ## FIXME ##
-  ##def test_timestamp_with_time_zone # a.k.a. timestamptz
-  ##  assert_converted_type(nil, "SELECT NULL::timestamp with time zone")
-  ##  assert_converted_type(DateTime.parse('2009-10-15T23:59:59.9-05:00'),
-  ##                        "SELECT '2009-10-15 23:59:59.9-05'::timestamp with time zone")
-  ##end
+  def test_timestamp_with_time_zone # a.k.a. timestamptz
+    assert_converted_type(nil, "SELECT NULL::timestamp with time zone")
+    assert_converted_type(DateTime.parse('2009-10-15T23:59:59.9-05:00'),
+                          "SELECT '2009-10-15 23:59:59.9-05'::timestamp with time zone")
+  end
 
   def test_numeric # a.k.a. decimal
     assert_converted_type(nil, "SELECT NULL::NUMERIC")
