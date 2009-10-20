@@ -74,21 +74,18 @@ module DBI::DBD::AltPg::Type
     end
   end
 
-  simple_pg_type :Bigint => :int8 do
+  simple_pg_type :Integer => [:int2, :int4, :int8] do
     def unpack(bytes)
-      return Util.unpack_int64_big(bytes)
-    end
-  end
-
-  simple_pg_type :Int => :int4 do
-    def unpack(bytes)
-      return Util.unpack_int32_big(bytes)
-    end
-  end
-
-  simple_pg_type :Smallint => :int2 do
-    def unpack(bytes)
-      return Util.unpack_int16_big(bytes)
+      case bytes.length
+      when 2
+        Util.unpack_int16_big(bytes)
+      when 4
+        Util.unpack_int32_big(bytes)
+      when 8
+        Util.unpack_int64_big(bytes)
+      else
+        raise DBI::InternalError, "Unexpected length for pg integral type (#{bytes.length})"
+      end
     end
   end
 
@@ -126,13 +123,28 @@ module DBI::DBD::AltPg::Type
     end
   end # -- simple_pg_type Numeric
 
-  simple_pg_type :Timestamp => :timestamp do
+  simple_pg_type :Timestamp => [:timestamp, :timestamptz] do
     # timestamp without time zone
     # int64 microseconds offset from pg epoch
     # XXX assumes integer_datetimes XXX
     # XXX we ignore timezone for now... XXX
     def unpack(bytes)
-      Util::PgTimestampEpoch + Rational(Util.unpack_int64_big(bytes), 86_400 * 1_000_000)
+      Util::PgTimestampEpoch + Util.unpack_int64_datetime(bytes)
+    end
+  end
+
+  simple_pg_type :Time => [:time, :timetz] do
+    # int64_t milliseconds offset from 00:00:00
+    def unpack(bytes)
+      today = ::Date.today
+      hhmmss_secs = Util.unpack_int64_datetime(bytes.slice!(0,8))
+      zone_offset = bytes.length == 0 ?
+                    0 :                                             # 'time'
+                    -Rational(Util.unpack_int32_big(bytes), 86_400) # 'timetz'
+      ::DateTime.civil(today.year, today.mon, today.mday,
+                       0, 0, 0, zone_offset,
+                       today.start) \
+        + hhmmss_secs
     end
   end
 

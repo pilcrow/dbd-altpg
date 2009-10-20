@@ -48,8 +48,9 @@ module DBI::DBD::AltPg::Type
   # Convenience module to define a the pg epoch, and to let us unpack signed
   # integral values in network byte order.
   module Util
-    PgDateEpoch      = Date.civil(2000, 01, 01)
-    PgTimestampEpoch = DateTime.civil(2000, 01, 01)
+    PgDateEpoch          = Date.civil(2000, 01, 01)
+    PgTimestampEpoch     = DateTime.civil(2000, 01, 01)
+    MICROSECONDS_PER_DAY = 24 * 60 * 60 * 1_000_000
 
     if [1].pack('l') == "\001\000\000\000"  # little-endian
       def self.unpack_int16_big(bytes)
@@ -71,6 +72,10 @@ module DBI::DBD::AltPg::Type
       def self.unpack_int64_big(bytes)
         bytes.unpack('q').first
       end
+    end
+
+    def self.unpack_int64_datetime(bytes)
+      Rational(unpack_int64_big(bytes), MICROSECONDS_PER_DAY)
     end
   end # -- module Util
 end
