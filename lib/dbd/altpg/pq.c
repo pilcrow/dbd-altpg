@@ -28,10 +28,6 @@ static VALUE rbx_mAltPg;  /* module DBI::DBD::AltPg           */
 static VALUE rbx_cDb;     /* class DBI::DBD::AltPg::Database  */
 static VALUE rbx_cSt;     /* class DBI::DBD::AltPg::Statement */
 
-static ID id_to_s;
-static ID id_to_i;
-static ID id_new;
-static ID id_inspect;
 static ID id_translate_parameters;
 static VALUE sym_type_name;
 static VALUE sym_dbi_type;
@@ -497,15 +493,11 @@ static VALUE
 AltPg_Db_dbname(VALUE self)
 {
 	struct AltPg_Db *db;
-	VALUE ret;
 
 	Data_Get_Struct(self, struct AltPg_Db, db);
 
 	/* FIXME - internalerror if NULL == db->conn */
-	ret = rb_str_new2(PQdb(db->conn));
-	OBJ_TAINT(ret);
-
-	return ret;
+	return rb_tainted_str_new2(PQdb(db->conn));
 }
 
 static VALUE
@@ -596,7 +588,7 @@ AltPg_St_initialize(VALUE self, VALUE parent, VALUE query)
 
 	rb_iv_set(self, "@type_map", rb_iv_get(parent, "@type_map")); // ??? store @parent instead?
 	plan = rb_str_new2("ruby-dbi:altpg:");
-	rb_str_append(plan, rb_funcall(ULONG2NUM(db->serial++), id_to_s, 0));
+	rb_str_append(plan, rb_obj_as_string(ULONG2NUM(db->serial++)));
 	rb_iv_set(self, "@plan", plan);
 
 	if (!PQsendPrepare(st->conn,
@@ -626,13 +618,7 @@ AltPg_St_bind_param(VALUE self, VALUE index, VALUE val, VALUE ignored)
 	 */
 	rb_ary_store(rb_iv_get(self, "@params"),
 	             FIX2INT(index) - 1,
-	             rb_funcall(val, id_to_s, 0));
-	//printf("bind_param -> @params[%s] = '%s'\n",
-	//       STR2CSTR(rb_funcall(index, id_inspect, 0)),
-	//       STR2CSTR(rb_funcall(val, id_inspect, 0)));
-	//printf("bind_param -> @params[%d] = '%s'\n",
-	//       FIX2INT(index) - 1,
-	//       STR2CSTR(rb_funcall(val, id_to_s, 0)));
+	             rb_obj_as_string(val));
 
 	return Qnil;
 }
@@ -850,10 +836,6 @@ Init_pq()
 	rb_define_method(rbx_cSt, "rows", AltPg_St_rows, 0);
 	rb_define_method(rbx_cSt, "column_info", AltPg_St_column_info, 0);
 
-	id_to_s                 = rb_intern("to_s");
-	id_to_i                 = rb_intern("to_i");
-	id_new                  = rb_intern("new");
-	id_inspect              = rb_intern("inspect");
 	id_translate_parameters = rb_intern("translate_parameters");
 	sym_type_name    = ID2SYM(rb_intern("type_name"));
 	sym_dbi_type     = ID2SYM(rb_intern("dbi_type"));
