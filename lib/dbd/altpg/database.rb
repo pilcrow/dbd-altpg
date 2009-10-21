@@ -220,7 +220,7 @@ eosql
   end
 
   def __show_variable(var)
-    make_dbh.select_one('SELECT pg_catalog.current_setting(?)', var)[0]
+    make_dbh.select_one('SELECT pg_catalog.current_setting(?)', var)[0].taint
   rescue ::DBI::DatabaseError => e
     if e.state =~ /^42/
       e = ::DBI::ProgrammingError.new(e.message, e.err, e.state)
@@ -256,8 +256,6 @@ FROM
   pg_catalog.pg_type t
 WHERE
   t.typtype IN ('b', 'e')       -- 'b' base or 'e' enum
---  AND
---  t.typname NOT LIKE E'\\_%'    -- ARRAY[]s are handled specially
 eosql
     raw_sth.execute
     while r = raw_sth.fetch

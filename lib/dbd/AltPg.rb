@@ -12,6 +12,7 @@ module DBD
       "AltPg"
     end
 
+    # :nodoc:
     Pg_Regex_ParseParams = %r{         # We look for:
           ["'?]                        # 1. ? params, "identifiers" or
                                        #    'literals' (incl. E'', B''
@@ -23,7 +24,8 @@ module DBD
           \$
     }x     # :nodoc:
 
-    def self.translate_parameters(sql)        # :nodoc:
+    # :nodoc:
+    def self.translate_parameters(sql)
       sql = sql.dup
       param = 1
       i = 0
