@@ -16,6 +16,8 @@ class DBI::DBD::AltPg::Database < DBI::BaseDatabase
     case key
     when 'altpg_client_encoding'
       __show_variable('client_encoding')
+    when 'altpg_socket'
+      pq_socket
     when /^altpg_/
       raise DBI::NotSupportedError, "Option dbh['#{key}'] is not supported"
     else
@@ -33,6 +35,8 @@ class DBI::DBD::AltPg::Database < DBI::BaseDatabase
       end
     when 'altpg_client_encoding'
       __set_variable('client_encoding', value)
+    when 'altpg_socket'
+      raise DBI::ProgrammingError, "Attempt to modify read-only dbh['#{key}']"
     when /^altpg_/
       raise DBI::NotSupportedError, "Option dbh['#{key}'] is not supported"
     end
@@ -163,6 +167,47 @@ eosql
 
   def prepare(query)
     DBI::DBD::AltPg::Statement.new(self, query)
+  end
+
+  #
+  # dbh.func(:pq_notifies, timeout = 0) => [ notify, pid ]
+  # dbh.func(:pq_notifies, timeout = 0) { |notify, pid| block }
+  #
+  # Enhanced interface to the PQnotifies() function, accessed via the
+  # DBI::DatabaseHandle#func interface.  Returns the next pending NOTIFY
+  # signal (as a string) and notifier pid, or +nil+ if no NOTIFY signals
+  # have been delivered.
+  #
+  # If your version of the DBI supports block arguments to #func(), this
+  # method may instead pass all pending NOTIFYs to a user-supplied block.
+  #
+  # If given, the optional timeout controls how long to wait for the
+  # arrival of at least one NOTIFY.
+  #
+  # Example:
+  #   dbh.do('LISTEN shutdown')
+  #   dbh.do('LISTEN reload')
+  #   dbh.do('LISTEN run_stats')
+  #
+  #   MyApp.reload()
+  #   loop do
+  #     notify, pid = dbh.func(:pq_notifies, -1) # wait around forever
+  #     puts "Received #{notify} signal from pid #{pid}"
+  #     case notify
+  #     when 'shutdown'
+  #       MyApp.shutdown()
+  #     when 'reload'
+  #       MyApp.reload()
+  #     when 'run_stats'
+  #       ...
+  #     end
+  #   end
+  def __pq_notifies(timeout = 0, &p)
+    if timeout.nil? or timeout != 0
+      timeout = nil if timeout < 0
+      ::Kernel.select( [::IO.for_fd(pq_socket)], nil, nil, timeout )
+    end
+    return pq_notifies(&p)
   end
 
   def __set_variable(var, value, is_local = false)

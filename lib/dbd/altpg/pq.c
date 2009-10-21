@@ -517,6 +517,39 @@ AltPg_Db_in_transaction_p(VALUE self)
 	return altpg_db_in_transaction(db) ? Qtrue : Qfalse;
 }
 
+static VALUE
+AltPg_Db_pq_socket(VALUE self)
+{
+	struct AltPg_Db *db;
+
+	Data_Get_Struct(self, struct AltPg_Db, db);
+	return INT2FIX(PQsocket(db->conn));
+}
+
+static VALUE
+AltPg_Db_pq_notifies(VALUE self)
+{
+	struct AltPg_Db *db;
+	struct pgNotify *notification;
+	VALUE ary;
+
+	Data_Get_Struct(self, struct AltPg_Db, db);
+
+	PQconsumeInput(db->conn);
+	notification = PQnotifies(db->conn);
+	if (! notification) return Qnil;
+
+	ary = rb_ary_new2(2);
+	rb_ary_store(ary, 0, rb_str_new2(notification->relname));
+	rb_ary_store(ary, 1, INT2FIX(notification->be_pid));
+
+	if (!rb_block_given_p()) return ary;
+
+	do { rb_yield(ary); } while (notification = PQnotifies(db->conn));
+
+	return Qnil;
+}
+
 /* ---------- DBI::DBD::Pq::Statement ------------------------------------- */
 
 static void
@@ -797,7 +830,9 @@ Init_pq()
 	                                   rb_path2class("DBI::BaseStatement"));
 
 	rb_define_alloc_func(rbx_cDb, AltPg_Db_s_alloc);
-	rb_define_method(rbx_cDb, "pq_connect_db", AltPg_Db_pq_connect_db, 1);
+	rb_define_private_method(rbx_cDb, "pq_connect_db", AltPg_Db_pq_connect_db, 1);
+	rb_define_private_method(rbx_cDb, "pq_socket", AltPg_Db_pq_socket, 0);
+	rb_define_private_method(rbx_cDb, "pq_notifies", AltPg_Db_pq_notifies, 0);
 	rb_define_method(rbx_cDb, "in_transaction?", AltPg_Db_in_transaction_p, 0);
 	rb_define_method(rbx_cDb, "database_name", AltPg_Db_dbname, 0);
 	rb_define_method(rbx_cDb, "disconnect", AltPg_Db_disconnect, 0);
