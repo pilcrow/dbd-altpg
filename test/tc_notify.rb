@@ -39,8 +39,6 @@ class TestAltPgNotify < Test::Unit::TestCase
   end
 
   def test_notifies
-    @dbh_2 = DBI.connect(*TestHelper::ConnArgs)
-
     @dbh.do('NOTIFY ping')
 
     r = @dbh.func(:pq_notifies)
