@@ -1,7 +1,8 @@
 #include <libpq-fe.h>
 #include <ruby.h>
-//#include <rubyio.h>
-//#include <st.h>
+#ifdef HAVE_SYS_SELECT_H
+#include <sys/select.h>
+#endif
 
 /* Code Map
  *
@@ -76,34 +77,37 @@ raise_dbi_database_error(const char *msg, const char *sqlstate)
 	                                   rb_path2class("DBI::DatabaseError")));
 }
 
-static void
-altpg_thread_select(int nfd, fd_set *rfds, fd_set *wfds)
+static int
+altpg_thread_select(int nfd, fd_set *rfds, fd_set *wfds, struct timeval *tv)
 {
-	int r = rb_thread_select(nfd, rfds, wfds, NULL, NULL);
-	if (r > 0) return;
+	int r = rb_thread_select(nfd, rfds, wfds, NULL, tv);
+	if (r > 0) return r;
 
 	if (r < 0) raise_dbi_internal_error("Internal select() error");
-	raise_dbi_internal_error("Internal select() impossibly timed out");
+	if (NULL == tv)
+		raise_dbi_internal_error("Internal select() impossibly timed out");
+
+	return r;
 }
 
-static void
-fd_await_readable(fd)
+static int
+fd_await_readable(int fd, struct timeval *tv)
 {
 	fd_set fds;
 
 	FD_ZERO(&fds);
 	FD_SET(fd, &fds);
-	altpg_thread_select(fd + 1, &fds, NULL);
+	return altpg_thread_select(fd + 1, &fds, NULL, tv);
 }
 
-static void
-fd_await_writeable(fd)
+static int
+fd_await_writeable(int fd, struct timeval *tv)
 {
 	fd_set fds;
 
 	FD_ZERO(&fds);
 	FD_SET(fd, &fds);
-	altpg_thread_select(fd + 1, NULL, &fds);
+	return altpg_thread_select(fd + 1, NULL, &fds, tv);
 }
 
 static void
@@ -173,12 +177,17 @@ async_PQgetResult(PGconn *conn)
 	int fd;
 
 	fd = PQsocket(conn);
-	fd_await_readable(fd);
+
+	/* Assumption:  we are called immediately after a PQsend(),
+	 *              so we're expecting new, un-PQconsume'd data to
+	 *              arrive
+	 */
+	fd_await_readable(fd, NULL);
 
 	/* ruby-pg-0.8.0 pgconn_block() */
 	PQconsumeInput(conn);
 	while (PQisBusy(conn)) {
-		fd_await_readable(fd);
+		fd_await_readable(fd, NULL);
 		PQconsumeInput(conn);
 	}
 
@@ -372,10 +381,10 @@ altpg_db_pq_connect_poll(struct AltPg_Db *db)
 			raise_dbi_database_error("PQconnectPoll: bad connection", "08000");
 			break; /* not reached */
 		case PGRES_POLLING_READING:
-			fd_await_readable(fd);
+			fd_await_readable(fd, NULL);
 			break;
 		case PGRES_POLLING_WRITING:
-			fd_await_writeable(fd);
+			fd_await_writeable(fd, NULL);
 			break;
 		default:
 			raise_dbi_internal_error("PQconnectPoll: non-sensical PGRES_POLLING status encountered");
@@ -518,9 +527,20 @@ AltPg_Db_pq_socket(VALUE self)
 	return INT2FIX(PQsocket(db->conn));
 }
 
+/* call-seq:
+ *  db.pq_notifies(timeout) -> [notify, pid] or nil
+ *  db.pq_notifies(timeout) { |notify, pid| block }
+ *
+ *  Fetch the next pending NOTIFY or, if a block is given,
+ *  all pending NOTIFYs, waiting up to +timeout+ for the
+ *  first NOTIFY to arrive.  +timeout+ is interpreted as
+ *  for Kernel.select().
+ */
 static VALUE
-AltPg_Db_pq_notifies(VALUE self)
+AltPg_Db_pq_notifies(VALUE self, VALUE timeout)
 {
+	extern struct timeval rb_time_interval(VALUE);
+
 	struct AltPg_Db *db;
 	struct pgNotify *notification;
 	VALUE ary;
@@ -529,6 +549,18 @@ AltPg_Db_pq_notifies(VALUE self)
 
 	PQconsumeInput(db->conn);
 	notification = PQnotifies(db->conn);
+	if (! notification) {
+		struct timeval patience, *tv = NULL;
+
+		if (! NIL_P(timeout)) {
+			patience = rb_time_interval(timeout);
+			tv = &patience;
+		}
+
+		fd_await_readable(PQsocket(db->conn), tv);
+		PQconsumeInput(db->conn);
+		notification = PQnotifies(db->conn);
+	}
 	if (! notification) return Qnil;
 
 	ary = rb_ary_new2(2);
@@ -818,7 +850,7 @@ Init_pq()
 	rb_define_alloc_func(rbx_cDb, AltPg_Db_s_alloc);
 	rb_define_private_method(rbx_cDb, "pq_connect_db", AltPg_Db_pq_connect_db, 1);
 	rb_define_private_method(rbx_cDb, "pq_socket", AltPg_Db_pq_socket, 0);
-	rb_define_private_method(rbx_cDb, "pq_notifies", AltPg_Db_pq_notifies, 0);
+	rb_define_private_method(rbx_cDb, "pq_notifies", AltPg_Db_pq_notifies, 1);
 	rb_define_method(rbx_cDb, "in_transaction?", AltPg_Db_in_transaction_p, 0);
 	rb_define_method(rbx_cDb, "database_name", AltPg_Db_dbname, 0);
 	rb_define_method(rbx_cDb, "disconnect", AltPg_Db_disconnect, 0);

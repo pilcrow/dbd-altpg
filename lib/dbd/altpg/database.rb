@@ -203,11 +203,13 @@ eosql
   #     end
   #   end
   def __pq_notifies(timeout = 0, &p)
-    if timeout.nil? or timeout != 0
-      timeout = nil if timeout < 0
-      ::Kernel.select( [::IO.for_fd(pq_socket)], nil, nil, timeout )
-    end
-    return pq_notifies(&p)
+    # Had originally implemented this in terms of Kernel.select and
+    # IO.for_fd, but that might lead to impolite action at a
+    # distance:  http://redmine.ruby-lang.org/issues/show/2250
+    #
+    # So, select(2) logic is pushed into C, where we don't need IO
+    # objects.
+    pq_notifies(timeout, &p)
   end
 
   def __set_variable(var, value, is_local = false)
