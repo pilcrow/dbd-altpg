@@ -14,7 +14,9 @@ class TestAltPgAttributes < Test::Unit::TestCase
   def test_attr_socket
     assert_kind_of(Integer, @dbh['altpg_socket'])
     assert_nothing_raised do
-      ::IO.for_fd(@dbh['altpg_socket'])
+      # Must suppress for_fd() IO obj. finalization.
+      # See http://redmine.ruby-lang.org/issues/show/2250
+      $ruby_bug_2250_workaround = ::IO.for_fd(@dbh['altpg_socket'])
     end
 
     @dbh.disconnect
