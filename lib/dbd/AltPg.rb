@@ -4,7 +4,7 @@ module DBI
 module DBD
 
   module AltPg
-    VERSION = 'pre-20091001'
+    VERSION = '0.0.1'
     DESCRIPTION = 'PostgreSQL DBI DBD'
 
     # see DBI::TypeUtil#convert
