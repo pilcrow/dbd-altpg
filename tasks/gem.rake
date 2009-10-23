@@ -14,6 +14,12 @@ spec = Gem::Specification.new do |s|
   s.homepage = 'http://github.com/pilcrow/dbd-altpg'
   s.requirements = 'PostgreSQL libpq library and headers, ruby-dbi'
   s.has_rdoc = true
+  s.files = FileList['lib/dbd/*.rb',
+                     'lib/dbd/altpg/*.{rb,c,h}',
+                     'test/*',
+                     'Rakefile',
+                     'README',
+                     'TODO']
   s.extra_rdoc_files = 'lib/dbd/altpg/pq.c'
   s.extensions = ['lib/dbd/altpg/extconf.rb']
   s.required_ruby_version = '>= 1.8.6'
