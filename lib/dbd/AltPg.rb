@@ -40,7 +40,7 @@ module DBD
           i = sql.index(?\n, i+2) + 1 rescue sql.length
         when "/*"
           # C-style comment, advance past close of comment
-          i = sql.index("*/", i+2) + 1 rescue sql.length
+          i = sql.index("*/", i+2) + 2 rescue sql.length
         when "?"
           # Parameter, substitute $1-style placeholder
           sql[i] = placeholder = "$#{param}"
@@ -48,7 +48,9 @@ module DBD
           param += 1
         else
           # $$ delimiter, advance past closing delimiter
-          i = sql.index($~[0], i + $~[0].length) + 1 rescue sql.length
+          # FIXME - potentially unsafe to refer to $~ again, as a when
+          #         branch w/ regex might invalidate
+          i = sql.index($~[0], i + $~[0].length) + $~[0].length rescue sql.length
         end
       end
 
