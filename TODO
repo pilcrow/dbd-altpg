@@ -12,7 +12,8 @@ TODO:
  - Document DATE/TIMESTAMP Date/DateTime dissonance
    Ruby and PG don't agree on calendar reforms hundreds of years ago...
 
- - gem-ify
+ - Packaging
+   . set version in a VERSION file
 
  - types.rb, type conversions
    . Rename to type.rb, reimplement in C or autoload in ruby?
@@ -25,12 +26,42 @@ TODO:
        classes for every type not handled specially.  Don't record any
        array Oids in the per-connection typemap.
 
+ - type support
+   . BLOBs
+
+   . bytea
+     Decision needed on intelligent inference of bytea encoding.  Ideally,
+     AltPg could detect whether a String contained chars outside the
+     permissible character set, but we may have to require explicit bytea
+     parameter binding...
+
+ - AltPg.translate_params
+   . dup sql iff substitution is being made?
+   . return no. of params?
+   . return normalized first verb?
+
+ - AltPg::Database
+   . COPY support
+     dbh.func :pq_put_copy_data, :pq_put_copy_end, :pq_get_copy_data
+   . PQ* status function attributes
+     dbh['altpg_backend_pid'], etc.
+
  - AltPg::Statement
-   . cache column_info -- called at least twice?
+   . prepare() efficiency, DBD::Pg guidance
+     defer PREP until first execution?
+     expose sth['altpg_statement_name'] ?
+     only PREP S/I/U/D/V statements?
+   . cache column_info -- called twice by DBI currently per execute
+   . sth.func(:describe) ... PQsendDescribePrepared
+     pg >= 8.1
+     How to communicate results?  Could set up @column_info, return
+     @param_info ?  DBI won't let us call column_info() prior to execute
 
  - Choke if not integer datestyle?
 
 DONE:
+ - PQnotifies support
+
  - restrict to protocol 3, server version 8.0+
 
  - Dropped 'text' support
