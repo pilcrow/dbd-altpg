@@ -38,7 +38,8 @@ class DBI::DBD::AltPg::Database < DBI::BaseDatabase
     when 'altpg_socket'
       raise DBI::ProgrammingError, "Attempt to modify read-only dbh['#{key}']"
     when /^altpg_/
-      raise DBI::NotSupportedError, "Option dbh['#{key}'] is not supported"
+      self[key] # may raise DBI::NotSupported
+      raise DBI::ProgrammingError, "Attempt to modify read-only attribute dbh['#{key}']"
     end
     @attr[key] = value
   end
