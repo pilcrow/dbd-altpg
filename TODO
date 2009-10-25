@@ -27,6 +27,7 @@ TODO:
        array Oids in the per-connection typemap.
 
  - type support
+   . BIT
    . BLOBs
 
    . bytea
@@ -44,11 +45,12 @@ TODO:
    . COPY support
      dbh.func :pq_put_copy_data, :pq_put_copy_end, :pq_get_copy_data
    . PQ* status function attributes
-     dbh['altpg_backend_pid'], etc.
+     dbh['altpg_backend_pid'], 'altpg_transaction_status' => :PQTRANS_IDLE,
+     etc.
 
  - AltPg::Statement
    . prepare() efficiency, DBD::Pg guidance
-     defer PREP until first execution?
+     defer PREP until first execution?  (Allow type hints?)
      expose sth['altpg_statement_name'] ?
      only PREP S/I/U/D/V statements?
    . cache column_info -- called twice by DBI currently per execute
