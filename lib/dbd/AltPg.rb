@@ -13,7 +13,14 @@ module DBD
     end
 
     # :nodoc:
-    Pg_Regex_ParseParams = %r{         # We look for:
+    Pg_Regex_LocateAction = %r{
+           --                          # -- SQL comment to end-of-line
+      |    /\*                         # /* C-style comment */
+      |    \S+                         # Non-commented "token"
+    }x     # :nodoc:
+
+    # :nodoc:
+    Pg_Regex_ParseParams  = %r{        # We look for:
           ["'?]                        # 1. ? params, "identifiers" or
                                        #    'literals' (incl. E'', B''
                                        #    and X'').
@@ -24,13 +31,42 @@ module DBD
           \$
     }x     # :nodoc:
 
-    # :nodoc:
-    def self.translate_parameters(sql)
-      sql = sql.dup
-      param = 1
+    # translate_sql(sql) -> [ subst_sql, action, count_params ]
+    #
+    # Translate the given sql string, transforming ?-style placeholders into
+    # $1-styles.  Returns the transformed sql query, the lowercased "action"
+    # of the query (the first non-whitespace part of the query after any
+    # comments, normally "SELECT", "INSERT", "DROP", etc.), and the number of
+    # parameter substitutions made.
+    #
+    # This method expects to receive a single SQL query; it does not
+    # understand multiple queries in a single string.
+    #
+    # Note that if zero substitutions have been made, the returned sql string
+    # may be the same object as passed into the method.
+    #
+    # +action+ may be +nil+ if, after ignoring any comments, the sql query
+    # is empty.
+    def self.translate_sql(sql)
       i = 0
+      action = nil
+      param_no = 1
 
-      while i = sql.index(Pg_Regex_ParseParams, i)
+      # Extract and normalize the action, if any, skipping any leading
+      # comments
+      while i = sql.index(Pg_Regex_LocateAction, i)
+        case $~[0]
+        when '--'
+          i = sql.index(?\n, i+2) + 1 rescue sql.length
+        when '/*'
+          i = sql.index("*/", i+2) + 2 rescue sql.length
+        else
+          action = $~[0].downcase
+          break
+        end
+      end
+
+      while i = sql.index(Pg_Regex_ParseParams, i) rescue nil
         case $~[0]
         when "'", '"'
           # "identifier" or 'literal', advance past closing quote
@@ -42,10 +78,12 @@ module DBD
           # C-style comment, advance past close of comment
           i = sql.index("*/", i+2) + 2 rescue sql.length
         when "?"
+          sql = sql.dup if param_no == 1
+
           # Parameter, substitute $1-style placeholder
-          sql[i] = placeholder = "$#{param}"
+          sql[i] = placeholder = "$#{param_no}"
           i += placeholder.length
-          param += 1
+          param_no += 1
         else
           # $$ delimiter, advance past closing delimiter
           # FIXME - potentially unsafe to refer to $~ again, as a when
@@ -54,7 +92,7 @@ module DBD
         end
       end
 
-      sql
+      return [sql, param_no - 1, action]
     end
 
   end # -- module AltPg
@@ -62,17 +100,9 @@ module DBD
 end # -- module DBD
 end # -- module DBI
 
+# All the heavy lifting is done in AltPg::Statement.bind_param
 DBI::TypeUtil.register_conversion(DBI::DBD::AltPg.driver_name) do |obj|
-  # dbi-0.4.3 String default conversion broken for native binding, since
-  # the former adds quotes, which should be done by native binding
-  case obj
-  when ::String
-    [obj, false]
-  when ::TrueClass, ::FalseClass
-    [obj.to_s, false]
-  else
-    [obj, true]
-  end
+  [obj, false]
 end
 
 require 'dbd/altpg/driver'
