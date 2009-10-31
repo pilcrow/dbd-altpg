@@ -14,7 +14,7 @@ class TestAltPgMisuse < Test::Unit::TestCase
 
   def test_do_wrong_param_count
     sql = 'INSERT INTO t VALUES (?, ?)'
-    assert_raises(DBI::DatabaseError) do
+    assert_raises(DBI::ProgrammingError) do
       @dbh.do( sql, 3.14159265, 'A man a plan a canal, Panama', 'extraneous' )
     end
 
@@ -26,7 +26,7 @@ class TestAltPgMisuse < Test::Unit::TestCase
       assert_equal( 1, r )
     end
 
-    assert_raises(DBI::DatabaseError) do
+    assert_raises(DBI::ProgrammingError) do
       r = @dbh.do( sql, 3.14159265 )
     end
 
@@ -38,7 +38,7 @@ class TestAltPgMisuse < Test::Unit::TestCase
 
   def test_exec_wrong_param_count
     sth = @dbh.prepare('SELECT ?::NUMERIC, ?::VARCHAR')
-    assert_raises(DBI::DatabaseError) do
+    assert_raises(DBI::ProgrammingError) do
       sth.execute( 3.14159265, 'A man a plan a canal, Panama', 'extraneous' )
     end
 
@@ -52,7 +52,7 @@ class TestAltPgMisuse < Test::Unit::TestCase
                     sth.fetch_all )
     end
 
-    assert_raises(DBI::DatabaseError) do
+    assert_raises(DBI::ProgrammingError) do
       sth.execute( 3.14159265 )
     end
 
