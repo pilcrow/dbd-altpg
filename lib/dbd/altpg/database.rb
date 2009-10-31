@@ -167,7 +167,14 @@ eosql
   end
 
   def prepare(query)
-    DBI::DBD::AltPg::Statement.new(self, query)
+    sql, param_count, action = DBI::DBD::AltPg.translate_sql(query)
+    preparable = case action
+                 when "select", "delete", "insert", "update", "values"
+                   true
+                 else
+                   false
+                 end
+    DBI::DBD::AltPg::Statement.new(self, sql, param_count, preparable)
   end
 
   #
@@ -249,7 +256,8 @@ eosql
 
     map = Hash.new(
             {:type_name => 'unknown',
-             :dbi_type  => pg_type_map['unknown']}
+             :dbi_type  => pg_type_map['unknown'],
+             :oid       => 0 }
           )
     raw_sth = prepare(<<'eosql')
 SELECT
@@ -263,8 +271,10 @@ eosql
     raw_sth.execute
     while r = raw_sth.fetch
       oid, typname = r
-      map[oid.to_i] = { :type_name => typname,
-                        :dbi_type  => pg_type_map[typname] }
+      oid = oid.to_i
+      map[oid] = map[typname.to_sym] = { :type_name => typname,
+                                         :dbi_type  => pg_type_map[typname],
+                                         :oid       => oid }
     end
     map
   ensure
